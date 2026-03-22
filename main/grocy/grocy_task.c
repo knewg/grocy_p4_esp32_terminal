@@ -72,6 +72,7 @@ static void grocy_task_fn(void *arg)
 
         /* ── Drain stock command queue ── */
         grocy_stock_cmd_t cmd;
+        bool stock_post_failed = false;
         while (xQueueReceive(g_stock_cmd_queue, &cmd, 0) == pdTRUE) {
             esp_err_t ret = grocy_post_stock_entry(&cmd);
             if (ret == ESP_OK) {
@@ -83,7 +84,19 @@ static void grocy_task_fn(void *arg)
                 strlcpy(ev.product_name, cmd.product_name, sizeof(ev.product_name));
                 esp_event_post_to(g_grocy_event_loop, GROCY_EVENT,
                                   GROCY_EVENT_STOCK_CHANGE, &ev, sizeof(ev), 0);
+            } else {
+                /* POST failed — optimistic UI is now out of sync.
+                 * Force a product re-fetch to restore the real stock counts. */
+                stock_post_failed = true;
+                esp_event_post_to(g_grocy_event_loop, GROCY_EVENT,
+                                  GROCY_EVENT_STOCK_POST_FAILED, NULL, 0, 0);
             }
+        }
+
+        if (stock_post_failed) {
+            ESP_LOGW(TAG, "Stock POST failed — re-fetching to resync UI");
+            do_fetch = true;
+            continue;
         }
 
         /* ── Wait for refresh interval, explicit refresh, or stock command ── */

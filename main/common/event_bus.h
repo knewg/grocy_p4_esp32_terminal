@@ -33,9 +33,10 @@ typedef struct {
 
 /* ── GROCY_EVENT ids ── */
 typedef enum {
-    GROCY_EVENT_STOCK_CHANGE  = 0,
-    GROCY_EVENT_REFRESH_NOW   = 1,
-    GROCY_EVENT_PRODUCTS_READY = 2,
+    GROCY_EVENT_STOCK_CHANGE    = 0,
+    GROCY_EVENT_REFRESH_NOW     = 1,
+    GROCY_EVENT_PRODUCTS_READY  = 2,
+    GROCY_EVENT_STOCK_POST_FAILED = 3,
 } grocy_event_id_t;
 
 /* Payload posted with GROCY_EVENT_STOCK_CHANGE */

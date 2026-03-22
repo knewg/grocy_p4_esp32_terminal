@@ -5,9 +5,11 @@
 #include "grocy_client.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "esp_timer.h"
 #include "lvgl.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 static const char *TAG = "ui_main";
 
@@ -34,6 +36,10 @@ static lv_obj_t **s_cells      = NULL;
 static uint16_t   s_cell_count = 0;
 
 static lv_timer_t *s_poll_timer = NULL;
+
+/* Error banner: set from any task via atomic, cleared by poll timer */
+static atomic_int  s_stock_error_pending = 0;
+#define ERROR_SHOW_MS  4000
 
 /* ── Toggle button ── */
 static void toggle_event_cb(lv_event_t *e)
@@ -85,12 +91,35 @@ static void cell_tap_cb(lv_event_t *e)
     }
 }
 
-/* ── Poll timer: drain the product queue ── */
+/* ── Error event handler (called from event loop task) ── */
+static void on_stock_post_failed(void *arg, esp_event_base_t base,
+                                  int32_t event_id, void *data)
+{
+    atomic_store(&s_stock_error_pending, 1);
+}
+
+/* ── Poll timer: drain the product queue and manage error banner ── */
+static int64_t s_error_show_until_us = 0;
+
 static void poll_timer_cb(lv_timer_t *t)
 {
     grocy_product_list_msg_t msg;
     if (xQueueReceive(g_product_list_queue, &msg, 0) == pdTRUE) {
         ui_main_update_products(&msg);
+    }
+
+    /* Show error banner if a stock POST failed */
+    if (atomic_exchange(&s_stock_error_pending, 0)) {
+        s_error_show_until_us = esp_timer_get_time() + ERROR_SHOW_MS * 1000LL;
+        lv_label_set_text(s_lbl_status, LV_SYMBOL_WARNING " Update failed");
+        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0xFF4444), 0);
+    } else if (s_error_show_until_us && esp_timer_get_time() > s_error_show_until_us) {
+        s_error_show_until_us = 0;
+        /* Restore normal status text */
+        char status[32];
+        snprintf(status, sizeof(status), "%d products", s_product_count);
+        lv_label_set_text(s_lbl_status, status);
+        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0x888888), 0);
     }
 }
 
@@ -179,6 +208,10 @@ esp_err_t ui_main_init(void)
 
     /* Poll timer: check product queue every 200 ms */
     s_poll_timer = lv_timer_create(poll_timer_cb, 200, NULL);
+
+    esp_event_handler_register_with(g_grocy_event_loop, GROCY_EVENT,
+                                     GROCY_EVENT_STOCK_POST_FAILED,
+                                     on_stock_post_failed, NULL);
 
     ESP_LOGI(TAG, "UI main screen initialised");
     return ESP_OK;
