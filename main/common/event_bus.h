@@ -52,6 +52,11 @@ typedef struct {
     uint16_t count;
 } grocy_products_ready_data_t;
 
+/* Payload posted with GROCY_EVENT_STOCK_POST_FAILED */
+typedef struct {
+    uint32_t product_id;
+} grocy_stock_failed_event_data_t;
+
 #ifdef __cplusplus
 }
 #endif

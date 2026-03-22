@@ -88,8 +88,9 @@ static void grocy_task_fn(void *arg)
                 /* POST failed — optimistic UI is now out of sync.
                  * Force a product re-fetch to restore the real stock counts. */
                 stock_post_failed = true;
+                grocy_stock_failed_event_data_t fail_ev = { .product_id = cmd.product_id };
                 esp_event_post_to(g_grocy_event_loop, GROCY_EVENT,
-                                  GROCY_EVENT_STOCK_POST_FAILED, NULL, 0, 0);
+                                  GROCY_EVENT_STOCK_POST_FAILED, &fail_ev, sizeof(fail_ev), 0);
             }
         }
 
@@ -130,7 +131,7 @@ esp_err_t grocy_task_start(void)
 
     BaseType_t res = xTaskCreatePinnedToCore(
         grocy_task_fn, "grocy_task",
-        8192, NULL, 5, NULL, 0   /* core 0 */
+        16384, NULL, 5, NULL, 0   /* core 0 */
     );
     if (res != pdPASS) {
         ESP_LOGE(TAG, "xTaskCreatePinnedToCore failed");

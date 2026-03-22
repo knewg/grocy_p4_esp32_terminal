@@ -21,11 +21,13 @@ static const char *TAG = "ui_main";
 #define GRID_PAD       8
 
 /* ── State ── */
-static lv_obj_t  *s_toggle_btn    = NULL;
-static lv_obj_t  *s_toggle_label  = NULL;
+static lv_obj_t  *s_consume_btn   = NULL;
+static lv_obj_t  *s_purchase_btn  = NULL;
 static lv_obj_t  *s_grid          = NULL;
 static lv_obj_t  *s_lbl_status    = NULL;
-static bool       s_add_mode      = true;
+static bool       s_add_mode      = false;  /* Consume is default */
+
+static lv_timer_t *s_inactivity_timer = NULL;
 
 /* Current product list (owned by UI task after handoff) */
 static grocy_product_t  *s_products      = NULL;
@@ -37,18 +39,43 @@ static uint16_t   s_cell_count = 0;
 
 static lv_timer_t *s_poll_timer = NULL;
 
-/* Error banner: set from any task via atomic, cleared by poll timer */
-static atomic_int  s_stock_error_pending = 0;
+/* Error: product_id set from event handler, consumed by poll timer */
+static atomic_uint s_failed_product_id = 0;
 #define ERROR_SHOW_MS  4000
 
-/* ── Toggle button ── */
+/* ── Segmented toggle helpers ── */
+#define TOGGLE_ACTIVE_CONSUME  lv_color_hex(0xE74C3C)
+#define TOGGLE_ACTIVE_PURCHASE lv_color_hex(0x2ECC71)
+#define TOGGLE_INACTIVE        lv_color_hex(0x2A2A3E)
+
+static void update_toggle_ui(void)
+{
+    lv_obj_set_style_bg_color(s_consume_btn,
+        s_add_mode ? TOGGLE_INACTIVE : TOGGLE_ACTIVE_CONSUME, 0);
+    lv_obj_set_style_bg_color(s_purchase_btn,
+        s_add_mode ? TOGGLE_ACTIVE_PURCHASE : TOGGLE_INACTIVE, 0);
+}
+
+static void inactivity_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_add_mode) {
+        s_add_mode = false;
+        update_toggle_ui();
+        ESP_LOGI(TAG, "Inactivity timeout — reverted to Consume mode");
+    }
+}
+
 static void toggle_event_cb(lv_event_t *e)
 {
-    s_add_mode = !s_add_mode;
-    lv_label_set_text(s_toggle_label, s_add_mode ? "  ADD  " : "SUBTRACT");
-    lv_obj_set_style_bg_color(s_toggle_btn,
-        s_add_mode ? lv_color_hex(0x2ECC71) : lv_color_hex(0xE74C3C), 0);
-    ESP_LOGI(TAG, "Mode: %s", s_add_mode ? "ADD" : "SUBTRACT");
+    lv_obj_t *btn = lv_event_get_target(e);
+    s_add_mode = (btn == s_purchase_btn);
+    update_toggle_ui();
+    if (s_inactivity_timer) {
+        lv_timer_reset(s_inactivity_timer);
+        lv_timer_resume(s_inactivity_timer);
+    }
+    ESP_LOGI(TAG, "Mode: %s", s_add_mode ? "Purchase" : "Consume");
 }
 
 /* ── Product tap ── */
@@ -88,6 +115,10 @@ static void cell_tap_cb(lv_event_t *e)
                 break;
             }
         }
+        if (s_inactivity_timer) {
+            lv_timer_reset(s_inactivity_timer);
+            lv_timer_resume(s_inactivity_timer);
+        }
     }
 }
 
@@ -95,11 +126,20 @@ static void cell_tap_cb(lv_event_t *e)
 static void on_stock_post_failed(void *arg, esp_event_base_t base,
                                   int32_t event_id, void *data)
 {
-    atomic_store(&s_stock_error_pending, 1);
+    grocy_stock_failed_event_data_t *ev = (grocy_stock_failed_event_data_t *)data;
+    if (ev) {
+        atomic_store(&s_failed_product_id, ev->product_id);
+    }
 }
 
 /* ── Poll timer: drain the product queue and manage error banner ── */
 static int64_t s_error_show_until_us = 0;
+
+static void error_clear_timer_cb(lv_timer_t *t)
+{
+    lv_obj_t *cell = (lv_obj_t *)lv_timer_get_user_data(t);
+    ui_product_cell_clear_error(cell);
+}
 
 static void poll_timer_cb(lv_timer_t *t)
 {
@@ -108,14 +148,22 @@ static void poll_timer_cb(lv_timer_t *t)
         ui_main_update_products(&msg);
     }
 
-    /* Show error banner if a stock POST failed */
-    if (atomic_exchange(&s_stock_error_pending, 0)) {
+    /* Show error overlay on the specific cell that failed */
+    uint32_t failed_id = atomic_exchange(&s_failed_product_id, 0);
+    if (failed_id) {
+        for (uint16_t i = 0; i < s_product_count; i++) {
+            if (s_products[i].id == failed_id) {
+                ui_product_cell_set_error(s_cells[i]);
+                lv_timer_t *clr = lv_timer_create(error_clear_timer_cb, 4000, s_cells[i]);
+                lv_timer_set_repeat_count(clr, 1);
+                break;
+            }
+        }
         s_error_show_until_us = esp_timer_get_time() + ERROR_SHOW_MS * 1000LL;
         lv_label_set_text(s_lbl_status, LV_SYMBOL_WARNING " Update failed");
         lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0xFF4444), 0);
     } else if (s_error_show_until_us && esp_timer_get_time() > s_error_show_until_us) {
         s_error_show_until_us = 0;
-        /* Restore normal status text */
         char status[32];
         snprintf(status, sizeof(status), "%d products", s_product_count);
         lv_label_set_text(s_lbl_status, status);
@@ -143,18 +191,44 @@ static void build_header(lv_obj_t *screen)
     lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    /* Toggle button */
-    s_toggle_btn = lv_button_create(header);
-    lv_obj_set_size(s_toggle_btn, 130, 40);
-    lv_obj_set_style_bg_color(s_toggle_btn, lv_color_hex(0x2ECC71), 0);
-    lv_obj_set_style_radius(s_toggle_btn, 20, 0);
-    lv_obj_add_event_cb(s_toggle_btn, toggle_event_cb, LV_EVENT_CLICKED, NULL);
+    /* Segmented toggle: [Consume | Purchase]
+     * Container is a pill (radius=20, clip_corner=true).
+     * Buttons have radius=0 so they fill edge-to-edge — the container clips
+     * the outer corners, giving a pill appearance with a flat seam in the middle. */
+    lv_obj_t *seg = lv_obj_create(header);
+    lv_obj_set_size(seg, 240, 40);
+    lv_obj_set_style_bg_color(seg, lv_color_hex(0x2A2A3E), 0);
+    lv_obj_set_style_border_width(seg, 0, 0);
+    lv_obj_set_style_radius(seg, 20, 0);
+    lv_obj_set_style_clip_corner(seg, true, 0);
+    lv_obj_set_style_pad_all(seg, 0, 0);
+    lv_obj_set_style_pad_gap(seg, 0, 0);
+    lv_obj_set_flex_flow(seg, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(seg, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    s_toggle_label = lv_label_create(s_toggle_btn);
-    lv_label_set_text(s_toggle_label, "  ADD  ");
-    lv_obj_set_style_text_color(s_toggle_label, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(s_toggle_label, &lv_font_montserrat_14, 0);
-    lv_obj_center(s_toggle_label);
+    s_consume_btn = lv_button_create(seg);
+    lv_obj_set_size(s_consume_btn, 120, 40);
+    lv_obj_set_style_radius(s_consume_btn, 0, 0);
+    lv_obj_set_style_border_width(s_consume_btn, 0, 0);
+    lv_obj_add_event_cb(s_consume_btn, toggle_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_c = lv_label_create(s_consume_btn);
+    lv_label_set_text(lbl_c, "Consume");
+    lv_obj_set_style_text_color(lbl_c, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(lbl_c, &lv_font_montserrat_14, 0);
+    lv_obj_center(lbl_c);
+
+    s_purchase_btn = lv_button_create(seg);
+    lv_obj_set_size(s_purchase_btn, 120, 40);
+    lv_obj_set_style_radius(s_purchase_btn, 0, 0);
+    lv_obj_set_style_border_width(s_purchase_btn, 0, 0);
+    lv_obj_add_event_cb(s_purchase_btn, toggle_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_p = lv_label_create(s_purchase_btn);
+    lv_label_set_text(lbl_p, "Purchase");
+    lv_obj_set_style_text_color(lbl_p, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(lbl_p, &lv_font_montserrat_14, 0);
+    lv_obj_center(lbl_p);
+
+    update_toggle_ui();
 
     /* Spacer */
     lv_obj_t *spacer = lv_obj_create(header);
@@ -209,6 +283,10 @@ esp_err_t ui_main_init(void)
     /* Poll timer: check product queue every 200 ms */
     s_poll_timer = lv_timer_create(poll_timer_cb, 200, NULL);
 
+    /* Inactivity timer: revert to Consume after 10 minutes */
+    s_inactivity_timer = lv_timer_create(inactivity_timer_cb, 10 * 60 * 1000, NULL);
+    lv_timer_set_repeat_count(s_inactivity_timer, 1);
+
     esp_event_handler_register_with(g_grocy_event_loop, GROCY_EVENT,
                                      GROCY_EVENT_STOCK_POST_FAILED,
                                      on_stock_post_failed, NULL);
@@ -225,6 +303,9 @@ bool ui_main_is_add_mode(void)
 void ui_main_update_products(const grocy_product_list_msg_t *msg)
 {
     if (!msg || !msg->products) return;
+
+    /* Hide grid while rebuilding to avoid a blank-screen flash */
+    lv_obj_add_flag(s_grid, LV_OBJ_FLAG_HIDDEN);
 
     /* Free old cell objects */
     lv_obj_clean(s_grid);
@@ -245,6 +326,7 @@ void ui_main_update_products(const grocy_product_list_msg_t *msg)
     s_cells = calloc(s_product_count, sizeof(lv_obj_t *));
     if (!s_cells) {
         ESP_LOGE(TAG, "OOM allocating cell pointer array");
+        lv_obj_clear_flag(s_grid, LV_OBJ_FLAG_HIDDEN);
         return;
     }
 
@@ -256,6 +338,9 @@ void ui_main_update_products(const grocy_product_list_msg_t *msg)
         s_cells[i] = cell;
     }
     s_cell_count = s_product_count;
+
+    /* Reveal the rebuilt grid in one frame */
+    lv_obj_clear_flag(s_grid, LV_OBJ_FLAG_HIDDEN);
 
     /* Update status — but don't overwrite an active error banner */
     if (!s_error_show_until_us || esp_timer_get_time() > s_error_show_until_us) {
