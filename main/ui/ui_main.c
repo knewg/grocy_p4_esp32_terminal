@@ -257,10 +257,14 @@ void ui_main_update_products(const grocy_product_list_msg_t *msg)
     }
     s_cell_count = s_product_count;
 
-    /* Update status */
-    char status[32];
-    snprintf(status, sizeof(status), "%d products", s_product_count);
-    lv_label_set_text(s_lbl_status, status);
+    /* Update status — but don't overwrite an active error banner */
+    if (!s_error_show_until_us || esp_timer_get_time() > s_error_show_until_us) {
+        s_error_show_until_us = 0;
+        char status[32];
+        snprintf(status, sizeof(status), "%d products", s_product_count);
+        lv_label_set_text(s_lbl_status, status);
+        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0x888888), 0);
+    }
 
     ESP_LOGI(TAG, "Grid updated with %d products", s_product_count);
 }

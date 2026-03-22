@@ -79,6 +79,7 @@ static uint8_t *http_get(const char *url, const char *api_key, size_t *out_len)
 
     if (err != ESP_OK || status != 200 || s_body.oom) {
         ESP_LOGE(TAG, "GET %s failed: err=%s status=%d", url, esp_err_to_name(err), status);
+        esp_http_client_close(s_client);
         return NULL;
     }
 
@@ -108,7 +109,11 @@ static int http_post_json(const char *url, const char *api_key, const char *json
     esp_http_client_set_post_field(s_client, json_body, strlen(json_body));
 
     esp_err_t err = esp_http_client_perform(s_client);
-    return (err == ESP_OK) ? esp_http_client_get_status_code(s_client) : -1;
+    if (err != ESP_OK) {
+        esp_http_client_close(s_client);
+        return -1;
+    }
+    return esp_http_client_get_status_code(s_client);
 }
 
 /* ── Public API ── */
