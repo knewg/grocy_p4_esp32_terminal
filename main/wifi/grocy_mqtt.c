@@ -34,6 +34,16 @@ static void derive_device_id(void)
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
+static void screen_state_handler(void *arg, esp_event_base_t base,
+                                  int32_t event_id, void *data)
+{
+    if (!s_connected) return;
+    char topic[96];
+    make_topic(topic, sizeof(topic), "screen");
+    const char *payload = (event_id == SCREEN_EVENT_WAKE) ? "1" : "0";
+    esp_mqtt_client_publish(s_client, topic, payload, 0, 1, 1);
+}
+
 static void mqtt_event_handler(void *arg, esp_event_base_t base,
                                 int32_t event_id, void *data)
 {
@@ -115,6 +125,10 @@ esp_err_t mqtt_manager_init(void)
     }
 
     esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+
+    esp_event_handler_register_with(g_grocy_event_loop, SCREEN_EVENT, ESP_EVENT_ANY_ID,
+                                     screen_state_handler, NULL);
+
     return esp_mqtt_client_start(s_client);
 }
 

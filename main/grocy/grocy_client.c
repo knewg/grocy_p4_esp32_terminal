@@ -5,6 +5,7 @@
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "esp_timer.h"
 #include "mbedtls/base64.h"
 #include "cJSON.h"
 #include <string.h>
@@ -15,9 +16,12 @@ static const char *TAG = "grocy_client";
 
 /* ── Persistent HTTP client ── */
 
-#define HTTP_RECV_BUF_SIZE  (64 * 1024)
+#define HTTP_RECV_BUF_SIZE   (64 * 1024)
+/* Close idle connection before the server does (~300 s keepalive observed) */
+#define HTTP_IDLE_CLOSE_US   (60LL * 1000000LL)
 
-static esp_http_client_handle_t s_client = NULL;
+static esp_http_client_handle_t s_client       = NULL;
+static int64_t                  s_last_used_us = 0;
 
 typedef struct {
     uint8_t *buf;
@@ -66,6 +70,13 @@ static uint8_t *http_get(const char *url, const char *api_key, size_t *out_len)
 {
     if (!s_client) return NULL;
 
+    /* Proactively close if idle too long so we never hit a server-side reset */
+    int64_t now = esp_timer_get_time();
+    if (s_last_used_us > 0 && (now - s_last_used_us) > HTTP_IDLE_CLOSE_US) {
+        ESP_LOGD(TAG, "Closing idle HTTP connection before reuse");
+        esp_http_client_close(s_client);
+    }
+
     s_body.len = 0;
     s_body.oom = false;
 
@@ -77,9 +88,9 @@ static uint8_t *http_get(const char *url, const char *api_key, size_t *out_len)
     esp_err_t err = esp_http_client_perform(s_client);
     int status    = esp_http_client_get_status_code(s_client);
 
-    /* Stale keep-alive: server closed connection — retry once */
+    /* Retry once on transport error (e.g. flaky wifi) */
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "GET %s failed (%s), retrying once", url, esp_err_to_name(err));
+        ESP_LOGW(TAG, "GET %s failed (%s), retrying", url, esp_err_to_name(err));
         esp_http_client_close(s_client);
         s_body.len = 0;
         s_body.oom = false;
@@ -90,8 +101,11 @@ static uint8_t *http_get(const char *url, const char *api_key, size_t *out_len)
     if (err != ESP_OK || status != 200 || s_body.oom) {
         ESP_LOGE(TAG, "GET %s failed: err=%s status=%d", url, esp_err_to_name(err), status);
         esp_http_client_close(s_client);
+        s_last_used_us = 0;
         return NULL;
     }
+
+    s_last_used_us = esp_timer_get_time();
 
     /* Copy result out of the shared buffer into a fresh allocation */
     uint8_t *out = psram_malloc(s_body.len + 1);
@@ -109,6 +123,13 @@ static int http_post_json(const char *url, const char *api_key, const char *json
 {
     if (!s_client) return -1;
 
+    /* Proactively close if idle too long */
+    int64_t now = esp_timer_get_time();
+    if (s_last_used_us > 0 && (now - s_last_used_us) > HTTP_IDLE_CLOSE_US) {
+        ESP_LOGD(TAG, "Closing idle HTTP connection before reuse");
+        esp_http_client_close(s_client);
+    }
+
     s_body.len = 0;
     s_body.oom = false;
 
@@ -120,9 +141,9 @@ static int http_post_json(const char *url, const char *api_key, const char *json
 
     esp_err_t err = esp_http_client_perform(s_client);
 
-    /* Stale keep-alive: server closed connection — retry once */
+    /* Retry once on transport error (e.g. flaky wifi) */
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "POST failed (%s), retrying once", esp_err_to_name(err));
+        ESP_LOGW(TAG, "POST failed (%s), retrying", esp_err_to_name(err));
         esp_http_client_close(s_client);
         s_body.len = 0;
         s_body.oom = false;
@@ -131,8 +152,11 @@ static int http_post_json(const char *url, const char *api_key, const char *json
 
     if (err != ESP_OK) {
         esp_http_client_close(s_client);
+        s_last_used_us = 0;
         return -1;
     }
+
+    s_last_used_us = esp_timer_get_time();
     return esp_http_client_get_status_code(s_client);
 }
 
