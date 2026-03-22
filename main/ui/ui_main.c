@@ -23,6 +23,7 @@ static const char *TAG = "ui_main";
 /* ── State ── */
 static lv_obj_t  *s_consume_btn   = NULL;
 static lv_obj_t  *s_purchase_btn  = NULL;
+static lv_obj_t  *s_header        = NULL;
 static lv_obj_t  *s_grid          = NULL;
 static lv_obj_t  *s_lbl_status    = NULL;
 static bool       s_add_mode      = false;  /* Consume is default */
@@ -54,6 +55,19 @@ static void update_toggle_ui(void)
         s_add_mode ? TOGGLE_INACTIVE : TOGGLE_ACTIVE_CONSUME, 0);
     lv_obj_set_style_bg_color(s_purchase_btn,
         s_add_mode ? TOGGLE_ACTIVE_PURCHASE : TOGGLE_INACTIVE, 0);
+
+    /* Mode color theme: header, grid bg, all cells */
+    if (s_header) {
+        lv_obj_set_style_bg_color(s_header,
+            lv_color_hex(s_add_mode ? 0x142014 : 0x181830), 0);
+    }
+    if (s_grid) {
+        lv_obj_set_style_bg_color(s_grid,
+            lv_color_hex(s_add_mode ? 0x0E170E : 0x12121E), 0);
+    }
+    for (uint16_t i = 0; i < s_cell_count; i++) {
+        if (s_cells[i]) ui_product_cell_set_theme(s_cells[i], s_add_mode);
+    }
 }
 
 static void inactivity_timer_cb(lv_timer_t *t)
@@ -107,11 +121,12 @@ static void cell_tap_cb(lv_event_t *e)
                  (unsigned long)product_id);
     } else {
         grocy_task_notify_stock_cmd();
-        /* Optimistic UI update */
+        /* Optimistic UI update + tap flash */
         for (uint16_t i = 0; i < s_product_count; i++) {
             if (s_products[i].id == product_id) {
                 s_products[i].stock_amount += s_add_mode ? 1.0f : -1.0f;
                 ui_product_cell_update(s_cells[i], &s_products[i]);
+                ui_product_cell_flash(s_cells[i], s_add_mode);
                 break;
             }
         }
@@ -182,6 +197,7 @@ static void refresh_btn_cb(lv_event_t *e)
 static void build_header(lv_obj_t *screen)
 {
     lv_obj_t *header = lv_obj_create(screen);
+    s_header = header;
     lv_obj_set_size(header, DISPLAY_W, HEADER_H);
     lv_obj_align(header, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_obj_set_style_bg_color(header, lv_color_hex(0x181830), 0);
@@ -338,6 +354,9 @@ void ui_main_update_products(const grocy_product_list_msg_t *msg)
         s_cells[i] = cell;
     }
     s_cell_count = s_product_count;
+
+    /* Apply current mode theme to newly built cells */
+    update_toggle_ui();
 
     /* Reveal the rebuilt grid in one frame */
     lv_obj_clear_flag(s_grid, LV_OBJ_FLAG_HIDDEN);

@@ -33,6 +33,8 @@ lv_obj_t *ui_product_cell_create(lv_obj_t *parent, const grocy_product_t *produc
     /* Flex layout: column, centred */
     lv_obj_set_flex_flow(cell, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(cell, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scrollbar_mode(cell, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(cell, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Allocate user data on the LVGL heap (small struct, ok to use default alloc) */
     cell_data_t *ud = lv_malloc(sizeof(cell_data_t));
@@ -94,6 +96,40 @@ lv_obj_t *ui_product_cell_create(lv_obj_t *parent, const grocy_product_t *produc
     lv_obj_add_flag(cell, LV_OBJ_FLAG_CLICKABLE);
 
     return cell;
+}
+
+/* ── Flash animation ── */
+static void flash_timer_cb(lv_timer_t *t)
+{
+    lv_obj_t *overlay = (lv_obj_t *)lv_timer_get_user_data(t);
+    if (overlay) lv_obj_delete(overlay);
+}
+
+void ui_product_cell_flash(lv_obj_t *cell, bool is_add_mode)
+{
+    lv_obj_t *overlay = lv_obj_create(cell);
+    lv_obj_add_flag(overlay, LV_OBJ_FLAG_FLOATING | LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_clear_flag(overlay, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    /* Offset by -pad_all (4px) to cover the full cell including its padding area */
+    lv_obj_set_pos(overlay, -4, -4);
+    lv_obj_set_size(overlay, UI_CELL_WIDTH, UI_CELL_HEIGHT);
+    lv_obj_set_style_radius(overlay, 8, 0);
+    lv_obj_set_style_bg_color(overlay,
+        lv_color_hex(is_add_mode ? 0x2ECC71 : 0xE74C3C), 0);
+    lv_obj_set_style_bg_opa(overlay, LV_OPA_40, 0);
+    lv_obj_set_style_border_width(overlay, 0, 0);
+    lv_obj_set_style_pad_all(overlay, 0, 0);
+
+    lv_timer_t *t = lv_timer_create(flash_timer_cb, 200, overlay);
+    lv_timer_set_repeat_count(t, 1);
+}
+
+void ui_product_cell_set_theme(lv_obj_t *cell, bool is_add_mode)
+{
+    lv_obj_set_style_bg_color(cell,
+        lv_color_hex(is_add_mode ? 0x162416 : 0x1E1E2E), 0);
+    lv_obj_set_style_border_color(cell,
+        lv_color_hex(is_add_mode ? 0x3A6040 : 0x444466), 0);
 }
 
 void ui_product_cell_set_error(lv_obj_t *cell)

@@ -77,6 +77,16 @@ static uint8_t *http_get(const char *url, const char *api_key, size_t *out_len)
     esp_err_t err = esp_http_client_perform(s_client);
     int status    = esp_http_client_get_status_code(s_client);
 
+    /* Stale keep-alive: server closed connection — retry once */
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "GET %s failed (%s), retrying once", url, esp_err_to_name(err));
+        esp_http_client_close(s_client);
+        s_body.len = 0;
+        s_body.oom = false;
+        err    = esp_http_client_perform(s_client);
+        status = esp_http_client_get_status_code(s_client);
+    }
+
     if (err != ESP_OK || status != 200 || s_body.oom) {
         ESP_LOGE(TAG, "GET %s failed: err=%s status=%d", url, esp_err_to_name(err), status);
         esp_http_client_close(s_client);
@@ -109,6 +119,16 @@ static int http_post_json(const char *url, const char *api_key, const char *json
     esp_http_client_set_post_field(s_client, json_body, strlen(json_body));
 
     esp_err_t err = esp_http_client_perform(s_client);
+
+    /* Stale keep-alive: server closed connection — retry once */
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "POST failed (%s), retrying once", esp_err_to_name(err));
+        esp_http_client_close(s_client);
+        s_body.len = 0;
+        s_body.oom = false;
+        err = esp_http_client_perform(s_client);
+    }
+
     if (err != ESP_OK) {
         esp_http_client_close(s_client);
         return -1;

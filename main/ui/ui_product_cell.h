@@ -36,6 +36,17 @@ void ui_product_cell_set_error(lv_obj_t *cell);
  */
 void ui_product_cell_clear_error(lv_obj_t *cell);
 
+/**
+ * Show a brief colored flash overlay (200 ms) for tap feedback.
+ * Green for purchase (is_add_mode=true), orange-red for consume.
+ */
+void ui_product_cell_flash(lv_obj_t *cell, bool is_add_mode);
+
+/**
+ * Apply the mode color theme to a cell (bg and border colors).
+ */
+void ui_product_cell_set_theme(lv_obj_t *cell, bool is_add_mode);
+
 #define UI_CELL_WIDTH   196
 #define UI_CELL_HEIGHT  260
 #define UI_CELL_IMG_W   150
