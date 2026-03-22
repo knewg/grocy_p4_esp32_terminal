@@ -4,6 +4,8 @@
 #include "sdkconfig.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
+#include "esp_crt_bundle.h"
+#include "mbedtls/base64.h"
 #include "cJSON.h"
 #include <string.h>
 #include <stdlib.h>
@@ -65,12 +67,13 @@ static uint8_t *http_get(const char *url, const char *api_key, size_t *out_len)
     }
 
     esp_http_client_config_t cfg = {
-        .url             = url,
-        .event_handler   = http_event_handler,
-        .user_data       = &body,
-        .buffer_size     = 4096,
-        .timeout_ms      = 10000,
+        .url                = url,
+        .event_handler      = http_event_handler,
+        .user_data          = &body,
+        .buffer_size        = 4096,
+        .timeout_ms         = 10000,
         .disable_auto_redirect = false,
+        .crt_bundle_attach  = esp_crt_bundle_attach,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
@@ -103,9 +106,10 @@ static uint8_t *http_get(const char *url, const char *api_key, size_t *out_len)
 static int http_post_json(const char *url, const char *api_key, const char *json_body)
 {
     esp_http_client_config_t cfg = {
-        .url         = url,
-        .method      = HTTP_METHOD_POST,
-        .timeout_ms  = 10000,
+        .url                = url,
+        .method             = HTTP_METHOD_POST,
+        .timeout_ms         = 10000,
+        .crt_bundle_attach  = esp_crt_bundle_attach,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) return -1;
@@ -204,21 +208,98 @@ esp_err_t grocy_parse_product_list_json(const uint8_t *json_body, size_t len,
 esp_err_t grocy_fetch_location_products(grocy_product_list_msg_t *out_list)
 {
     char url[256];
+
+    /* ── Step 1: all products (name, picture, default location_id) ── */
+    snprintf(url, sizeof(url), "%s/api/objects/products", g_config.grocy_url);
+    size_t prods_len = 0;
+    uint8_t *prods_body = http_get(url, g_config.grocy_api_key, &prods_len);
+    if (!prods_body) return ESP_FAIL;
+
+    cJSON *all_products = cJSON_ParseWithLength((const char *)prods_body, prods_len);
+    free(prods_body);
+    if (!all_products) return ESP_FAIL;
+
+    /* ── Step 2: current stock entries at this location (product_id → amount) ── */
     snprintf(url, sizeof(url), "%s/api/stock/locations/%lu/entries",
              g_config.grocy_url, (unsigned long)g_config.grocy_location_id);
+    size_t entries_len = 0;
+    uint8_t *entries_body = http_get(url, g_config.grocy_api_key, &entries_len);
+    cJSON *entries = (entries_body && entries_len > 0)
+        ? cJSON_ParseWithLength((const char *)entries_body, entries_len)
+        : NULL;
+    free(entries_body);
 
-    size_t len = 0;
-    uint8_t *body = http_get(url, g_config.grocy_api_key, &len);
-    if (!body) return ESP_FAIL;
-
-    esp_err_t ret = grocy_parse_product_list_json(body, len, out_list);
-    free(body);
-
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "Fetched %d products for location %lu",
-                 out_list->count, (unsigned long)g_config.grocy_location_id);
+    /* ── Step 3: filter products whose default location_id matches ── */
+    /* First pass: count matches */
+    int match_count = 0;
+    cJSON *prod = NULL;
+    cJSON_ArrayForEach(prod, all_products) {
+        cJSON *j_loc = cJSON_GetObjectItem(prod, "location_id");
+        if (j_loc && (uint32_t)cJSON_GetNumberValue(j_loc) == g_config.grocy_location_id)
+            match_count++;
     }
-    return ret;
+
+    if (match_count == 0) {
+        cJSON_Delete(all_products);
+        if (entries) cJSON_Delete(entries);
+        out_list->products = psram_calloc(1, sizeof(grocy_product_t));
+        out_list->count = 0;
+        ESP_LOGI(TAG, "No products assigned to location %lu",
+                 (unsigned long)g_config.grocy_location_id);
+        return ESP_OK;
+    }
+
+    grocy_product_t *products = psram_calloc(match_count, sizeof(grocy_product_t));
+    if (!products) {
+        cJSON_Delete(all_products);
+        if (entries) cJSON_Delete(entries);
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* Second pass: populate products, look up stock amount from entries */
+    int valid = 0;
+    cJSON_ArrayForEach(prod, all_products) {
+        cJSON *j_loc = cJSON_GetObjectItem(prod, "location_id");
+        if (!j_loc || (uint32_t)cJSON_GetNumberValue(j_loc) != g_config.grocy_location_id)
+            continue;
+
+        grocy_product_t *p = &products[valid];
+        cJSON *j_id   = cJSON_GetObjectItem(prod, "id");
+        cJSON *j_name = cJSON_GetObjectItem(prod, "name");
+        cJSON *j_pic  = cJSON_GetObjectItem(prod, "picture_file_name");
+
+        if (!j_id) continue;
+        p->id = (uint32_t)cJSON_GetNumberValue(j_id);
+        if (j_name && cJSON_IsString(j_name))
+            strlcpy(p->name, j_name->valuestring, sizeof(p->name));
+        if (j_pic && cJSON_IsString(j_pic))
+            strlcpy(p->picture_filename, j_pic->valuestring, sizeof(p->picture_filename));
+        strlcpy(p->unit, "x", sizeof(p->unit));
+
+        /* Find total stocked amount at this location (sum all batches) */
+        p->stock_amount = 0.0f;
+        if (entries) {
+            cJSON *entry = NULL;
+            cJSON_ArrayForEach(entry, entries) {
+                cJSON *j_pid = cJSON_GetObjectItem(entry, "product_id");
+                cJSON *j_amt = cJSON_GetObjectItem(entry, "amount");
+                if (j_pid && (uint32_t)cJSON_GetNumberValue(j_pid) == p->id && j_amt)
+                    p->stock_amount += (float)cJSON_GetNumberValue(j_amt);
+            }
+        }
+        valid++;
+    }
+
+    cJSON_Delete(all_products);
+    if (entries) cJSON_Delete(entries);
+
+    qsort(products, valid, sizeof(grocy_product_t), product_compare);
+
+    out_list->products = products;
+    out_list->count    = (uint16_t)valid;
+    ESP_LOGI(TAG, "Fetched %d products for location %lu", valid,
+             (unsigned long)g_config.grocy_location_id);
+    return ESP_OK;
 }
 
 esp_err_t grocy_post_stock_entry(const grocy_stock_cmd_t *cmd)
@@ -245,9 +326,16 @@ esp_err_t grocy_post_stock_entry(const grocy_stock_cmd_t *cmd)
 
 esp_err_t grocy_fetch_image(const char *filename, uint8_t *buf, size_t max_len, size_t *out_len)
 {
-    char url[256];
+    /* Grocy API requires the filename to be base64-encoded in the URL */
+    unsigned char b64[192];
+    size_t b64_len = 0;
+    mbedtls_base64_encode(b64, sizeof(b64), &b64_len,
+                          (const unsigned char *)filename, strlen(filename));
+    b64[b64_len] = '\0';
+
+    char url[384];
     snprintf(url, sizeof(url), "%s/api/files/productpictures/%s",
-             g_config.grocy_url, filename);
+             g_config.grocy_url, (char *)b64);
 
     http_body_t body = {
         .buf = buf,
@@ -257,11 +345,12 @@ esp_err_t grocy_fetch_image(const char *filename, uint8_t *buf, size_t max_len, 
     };
 
     esp_http_client_config_t cfg = {
-        .url           = url,
-        .event_handler = http_event_handler,
-        .user_data     = &body,
-        .buffer_size   = 4096,
-        .timeout_ms    = 15000,
+        .url               = url,
+        .event_handler     = http_event_handler,
+        .user_data         = &body,
+        .buffer_size       = 4096,
+        .timeout_ms        = 15000,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) return ESP_FAIL;

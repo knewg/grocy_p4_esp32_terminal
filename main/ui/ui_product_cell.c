@@ -46,12 +46,20 @@ lv_obj_t *ui_product_cell_create(lv_obj_t *parent, const grocy_product_t *produc
     lv_obj_t *img = lv_image_create(cell);
     lv_obj_set_size(img, UI_CELL_IMG_W, UI_CELL_IMG_H);
     lv_obj_set_style_radius(img, 4, 0);
-    lv_image_set_scale(img, 256);  /* 1:1 scale */
+    lv_image_set_inner_align(img, LV_IMAGE_ALIGN_CENTER);
     ud->img = img;
 
     const lv_image_dsc_t *dsc = image_cache_get(product->id);
     if (dsc) {
         lv_image_set_src(img, dsc);
+        /* Scale image to fit within the cell, preserving aspect ratio */
+        uint32_t scale = 256;
+        if (dsc->header.w > 0 && dsc->header.h > 0) {
+            uint32_t sx = (UI_CELL_IMG_W * 256) / dsc->header.w;
+            uint32_t sy = (UI_CELL_IMG_H * 256) / dsc->header.h;
+            scale = sx < sy ? sx : sy;
+        }
+        lv_image_set_scale(img, (uint32_t)scale);
     } else {
         /* Placeholder: grey rectangle */
         lv_obj_set_style_bg_color(img, lv_color_hex(0x333355), 0);

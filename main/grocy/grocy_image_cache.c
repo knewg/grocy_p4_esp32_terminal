@@ -5,6 +5,10 @@
 #include "esp_heap_caps.h"
 #include <string.h>
 #include <stdlib.h>
+#include <inttypes.h>
+#if CONFIG_SOC_JPEG_DECODE_SUPPORTED
+#include "driver/jpeg_decode.h"
+#endif
 
 static const char *TAG = "img_cache";
 
@@ -131,33 +135,82 @@ esp_err_t image_cache_fetch_and_store(uint32_t product_id, const char *filename)
         ret = image_cache_put(product_id, png_data, raw_len,
                               LV_COLOR_FORMAT_RAW, IMG_DECODE_W, IMG_DECODE_H);
     } else if (is_jpeg) {
-        /*
-         * For JPEG: use esp_jpeg to decode to RGB565 at target resolution.
-         * esp_jpeg is hardware-accelerated on the ESP32-P4.
-         */
-#if CONFIG_ESP_JPEG_ENABLE
-        jpeg_decode_cfg_t dec_cfg = {
-            .intype      = JPEG_DECODE_TYPE_IMAGE_FORMAT_RAW,
-            .outtype     = JPEG_DECODE_TYPE_RGB565,
-            .rgb_order   = JPEG_PIXEL_ORDER_RGB,
-        };
-        size_t out_size = IMG_DECODE_W * IMG_DECODE_H * 2;
-        uint8_t *rgb_data = psram_malloc(out_size);
+#if CONFIG_SOC_JPEG_DECODE_SUPPORTED
+        /* Get image dimensions from JPEG header */
+        jpeg_decode_picture_info_t pic_info = {0};
+        ret = jpeg_decoder_get_info(tmp, (uint32_t)raw_len, &pic_info);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "JPEG header parse failed for %s", filename);
+            free(tmp);
+            return ESP_OK;  /* non-fatal: show placeholder */
+        }
+
+        /* Hardware decoder output is padded to multiples of 16 */
+        uint32_t out_w    = (pic_info.width  + 15) & ~15u;
+        uint32_t out_h    = (pic_info.height + 15) & ~15u;
+        uint32_t out_size = out_w * out_h * 2;  /* RGB565 */
+
+        /* Guard against absurdly large images (> 4 MB decoded) */
+        if (out_size > 4 * 1024 * 1024) {
+            ESP_LOGW(TAG, "JPEG too large (%"PRIu32"x%"PRIu32"); skipping %s",
+                     pic_info.width, pic_info.height, filename);
+            free(tmp);
+            return ESP_OK;
+        }
+
+        jpeg_decode_memory_alloc_cfg_t mem_cfg = { .buffer_direction = JPEG_DEC_ALLOC_OUTPUT_BUFFER };
+        size_t alloc_size = 0;
+        uint8_t *rgb_data = jpeg_alloc_decoder_mem(out_size, &mem_cfg, &alloc_size);
         if (!rgb_data) { free(tmp); return ESP_ERR_NO_MEM; }
 
-        jpeg_decode_picture_info_t info = {0};
-        ret = jpeg_decoder_process(NULL, &dec_cfg, tmp, raw_len, rgb_data, out_size, &info);
+        jpeg_decode_engine_cfg_t engine_cfg = { .intr_priority = 0, .timeout_ms = 2000 };
+        jpeg_decoder_handle_t decoder = NULL;
+        ret = jpeg_new_decoder_engine(&engine_cfg, &decoder);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "jpeg_new_decoder_engine failed: %s", esp_err_to_name(ret));
+            free(tmp); free(rgb_data);
+            return ESP_OK;
+        }
+
+        jpeg_decode_cfg_t dec_cfg = {
+            .output_format = JPEG_DECODE_OUT_FORMAT_RGB565,
+            .rgb_order     = JPEG_DEC_RGB_ELEMENT_ORDER_BGR,  /* LVGL RGB565 is little-endian */
+            .conv_std      = JPEG_YUV_RGB_CONV_STD_BT601,
+        };
+        uint32_t actual_out = 0;
+        ret = jpeg_decoder_process(decoder, &dec_cfg, tmp, (uint32_t)raw_len,
+                                   rgb_data, out_size, &actual_out);
+        jpeg_del_decoder_engine(decoder);
         free(tmp);
+
         if (ret != ESP_OK) {
             free(rgb_data);
             ESP_LOGW(TAG, "JPEG decode failed for %s: %s", filename, esp_err_to_name(ret));
-            return ret;
+            return ESP_OK;
         }
-        ret = image_cache_put(product_id, rgb_data, out_size,
-                              LV_COLOR_FORMAT_RGB565, info.width, info.height);
+
+        /* Store with padded stride so LVGL reads rows correctly */
+        cache_entry_t *e = &s_entries[s_count < s_max ? s_count : s_max - 1];
+        if (s_count >= s_max) {
+            ESP_LOGW(TAG, "Cache full; evicting oldest");
+            free((void *)s_entries[0].dsc.data);
+            memmove(&s_entries[0], &s_entries[1], (s_max - 1) * sizeof(cache_entry_t));
+            s_count--;
+        }
+        e->product_id        = product_id;
+        e->valid             = true;
+        e->dsc.header.magic  = LV_IMAGE_HEADER_MAGIC;
+        e->dsc.header.cf     = LV_COLOR_FORMAT_RGB565;
+        e->dsc.header.w      = (uint32_t)pic_info.width;
+        e->dsc.header.h      = (uint32_t)pic_info.height;
+        e->dsc.header.stride = out_w * 2;   /* padded row stride */
+        e->dsc.data_size     = actual_out;
+        e->dsc.data          = rgb_data;
+        s_count++;
+        ret = ESP_OK;
 #else
         free(tmp);
-        ESP_LOGW(TAG, "JPEG support not compiled; skipping %s", filename);
+        ESP_LOGW(TAG, "JPEG hardware decoder not available; skipping %s", filename);
         ret = ESP_OK;
 #endif
     } else {
