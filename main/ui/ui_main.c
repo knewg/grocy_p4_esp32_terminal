@@ -73,6 +73,7 @@ static void cell_tap_cb(lv_event_t *e)
         ESP_LOGW(TAG, "Stock cmd queue full; dropping tap for product %lu",
                  (unsigned long)product_id);
     } else {
+        grocy_task_notify_stock_cmd();
         /* Optimistic UI update */
         for (uint16_t i = 0; i < s_product_count; i++) {
             if (s_products[i].id == product_id) {

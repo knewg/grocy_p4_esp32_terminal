@@ -16,15 +16,23 @@ static const char *TAG = "grocy_task";
 QueueHandle_t g_product_list_queue = NULL;
 QueueHandle_t g_stock_cmd_queue    = NULL;
 
-#define REFRESH_BIT  BIT0
+#define REFRESH_BIT   BIT0
+#define STOCK_CMD_BIT BIT1
 
 static EventGroupHandle_t s_flags = NULL;
 
 static void on_grocy_event(void *arg, esp_event_base_t base,
                             int32_t event_id, void *data)
 {
-    if (event_id == GROCY_EVENT_REFRESH_NOW || event_id == GROCY_EVENT_STOCK_CHANGE) {
+    if (event_id == GROCY_EVENT_REFRESH_NOW) {
         xEventGroupSetBits(s_flags, REFRESH_BIT);
+    }
+}
+
+void grocy_task_notify_stock_cmd(void)
+{
+    if (s_flags) {
+        xEventGroupSetBits(s_flags, STOCK_CMD_BIT);
     }
 }
 
@@ -37,37 +45,36 @@ static void grocy_task_fn(void *arg)
 
     TickType_t refresh_period = pdMS_TO_TICKS(CONFIG_GROCY_REFRESH_INTERVAL_SEC * 1000);
 
+    /* Initial product fetch on boot */
+    bool do_fetch = true;
+
     while (true) {
-        /* ── Fetch product list ── */
-        grocy_product_list_msg_t msg = {0};
-        esp_err_t ret = grocy_fetch_location_products(&msg);
-        if (ret == ESP_OK && msg.count > 0) {
-            /* Fetch images for all products (skips cached ones) */
-            for (uint16_t i = 0; i < msg.count; i++) {
-                image_cache_fetch_and_store(msg.products[i].id,
-                                            msg.products[i].picture_filename);
+        /* ── Fetch product list (only when needed) ── */
+        if (do_fetch) {
+            grocy_product_list_msg_t msg = {0};
+            esp_err_t ret = grocy_fetch_location_products(&msg);
+            if (ret == ESP_OK && msg.count > 0) {
+                for (uint16_t i = 0; i < msg.count; i++) {
+                    image_cache_fetch_and_store(msg.products[i].id,
+                                                msg.products[i].picture_filename);
+                }
+                image_cache_log_stats();
+                xQueueOverwrite(g_product_list_queue, &msg);
+                grocy_products_ready_data_t evt_data = { .count = msg.count };
+                esp_event_post_to(g_grocy_event_loop, GROCY_EVENT,
+                                  GROCY_EVENT_PRODUCTS_READY, &evt_data,
+                                  sizeof(evt_data), 0);
+            } else {
+                ESP_LOGW(TAG, "Product fetch failed or empty list");
+                if (msg.products) free(msg.products);
             }
-            image_cache_log_stats();
-
-            /* Push to UI queue (overwrites any stale pending message) */
-            xQueueOverwrite(g_product_list_queue, &msg);
-
-            /* Notify event bus */
-            grocy_products_ready_data_t evt_data = { .count = msg.count };
-            esp_event_post_to(g_grocy_event_loop, GROCY_EVENT,
-                              GROCY_EVENT_PRODUCTS_READY, &evt_data,
-                              sizeof(evt_data), 0);
-        } else {
-            ESP_LOGW(TAG, "Product fetch failed or empty list");
-            if (msg.products) free(msg.products);
         }
 
         /* ── Drain stock command queue ── */
         grocy_stock_cmd_t cmd;
         while (xQueueReceive(g_stock_cmd_queue, &cmd, 0) == pdTRUE) {
-            ret = grocy_post_stock_entry(&cmd);
+            esp_err_t ret = grocy_post_stock_entry(&cmd);
             if (ret == ESP_OK) {
-                /* Fire stock-change telemetry event */
                 grocy_stock_event_data_t ev = {
                     .product_id = cmd.product_id,
                     .op         = (int)cmd.op,
@@ -79,8 +86,14 @@ static void grocy_task_fn(void *arg)
             }
         }
 
-        /* ── Wait for refresh interval or explicit refresh request ── */
-        xEventGroupWaitBits(s_flags, REFRESH_BIT, pdTRUE, pdFALSE, refresh_period);
+        /* ── Wait for refresh interval, explicit refresh, or stock command ── */
+        EventBits_t bits = xEventGroupWaitBits(
+            s_flags, REFRESH_BIT | STOCK_CMD_BIT,
+            pdTRUE, pdFALSE, refresh_period);
+
+        /* Only re-fetch products on explicit refresh or periodic timeout.
+         * A stock-command wake skips the fetch — optimistic UI already updated. */
+        do_fetch = !(bits & STOCK_CMD_BIT) || (bits & REFRESH_BIT);
     }
 }
 

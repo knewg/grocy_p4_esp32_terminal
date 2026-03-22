@@ -345,13 +345,14 @@ esp_err_t grocy_fetch_location_products(grocy_product_list_msg_t *out_list)
 esp_err_t grocy_post_stock_entry(const grocy_stock_cmd_t *cmd)
 {
     const char *verb = (cmd->op == GROCY_OP_ADD) ? "add" : "consume";
+    const char *tx_type = (cmd->op == GROCY_OP_ADD) ? "purchase" : "consume";
     char url[256];
     snprintf(url, sizeof(url), "%s/api/stock/products/%lu/%s",
              g_config.grocy_url, (unsigned long)cmd->product_id, verb);
 
     char body[64];
     snprintf(body, sizeof(body), "{\"amount\":%.1f,\"transaction_type\":\"%s\"}",
-             cmd->amount, verb);
+             cmd->amount, tx_type);
 
     int status = http_post_json(url, g_config.grocy_api_key, body);
     if (status != 200) {

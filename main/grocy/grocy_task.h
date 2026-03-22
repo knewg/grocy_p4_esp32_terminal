@@ -24,6 +24,12 @@ esp_err_t grocy_task_start(void);
  */
 void grocy_task_request_refresh(void);
 
+/**
+ * Signal that a stock command was queued, waking the grocy task immediately
+ * to drain the queue without waiting for the next refresh cycle.
+ */
+void grocy_task_notify_stock_cmd(void);
+
 #ifdef __cplusplus
 }
 #endif

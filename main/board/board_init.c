@@ -152,6 +152,10 @@ static esp_err_t touch_init(void)
     ESP_RETURN_ON_ERROR(
         esp_lcd_new_panel_io_i2c(i2c_bus, &tp_io_cfg, &tp_io), TAG, "tp_io");
 
+    static const esp_lcd_touch_io_gt911_config_t gt911_cfg = {
+        .dev_addr = ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS,  /* 0x5D: INT low during reset */
+    };
+
     esp_lcd_touch_config_t tp_cfg = {
         .x_max         = BOARD_DISPLAY_WIDTH,
         .y_max         = BOARD_DISPLAY_HEIGHT,
@@ -159,6 +163,7 @@ static esp_err_t touch_init(void)
         .int_gpio_num  = BOARD_PIN_TOUCH_INT,
         .levels = {.reset = 0, .interrupt = 0},
         .flags = {.swap_xy = 0, .mirror_x = 0, .mirror_y = 0},
+        .driver_data   = (void *)&gt911_cfg,
     };
     ESP_RETURN_ON_ERROR(
         esp_lcd_touch_new_i2c_gt911(tp_io, &tp_cfg, &s_touch), TAG, "touch");
