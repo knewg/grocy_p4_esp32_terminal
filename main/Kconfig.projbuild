@@ -1,0 +1,117 @@
+menu "GROCY TERMINAL"
+
+    config GROCY_PROVISIONED_BY_KCONFIG
+        bool "Skip setup screen — use Kconfig values as provisioned config"
+        default n
+        help
+            When NVS is empty, treat the Kconfig values (WiFi SSID, Grocy URL, etc.)
+            as the provisioned configuration and skip the first-boot setup screen.
+            Enable this for development to avoid the touchscreen setup flow.
+
+    config GROCY_MIPI_DSI_PHY_LDO_CHAN
+        int "MIPI DSI PHY LDO channel (0 to disable)"
+        default 3
+        range 0 4
+        help
+            Internal LDO channel that supplies 2.5 V to VDD_MIPI_DPHY.
+            On the ESP32-P4-Function-EV-Board and JC1060P470C this is channel 3.
+            Set to 0 to skip LDO enable (if powered externally).
+
+    config GROCY_BACKLIGHT_GPIO
+        int "Backlight GPIO pin (-1 = always on / not GPIO-controlled)"
+        default 26
+        range -1 54
+        help
+            GPIO used for backlight PWM via LEDC. Set to -1 if the backlight
+            is always on or controlled outside the firmware (some modules).
+
+    config GROCY_API_URL
+        string "Grocy API Base URL"
+        default "http://grocy.local"
+        help
+            Base URL of your Grocy instance, e.g. http://grocy.local or https://grocy.example.com.
+
+    config GROCY_API_KEY
+        string "Grocy API Key"
+        default ""
+        help
+            Grocy API key. For production, leave blank and set via the on-device setup screen (stored in NVS).
+
+    config GROCY_LOCATION_ID
+        int "Grocy Location ID"
+        default 1
+        help
+            Grocy location ID to filter displayed products. Overridden by NVS value set in setup screen.
+
+    config GROCY_REFRESH_INTERVAL_SEC
+        int "Product list refresh interval (seconds)"
+        default 300
+        range 10 3600
+        help
+            How often to re-fetch the product list from Grocy.
+
+    config GROCY_OTA_MANIFEST_URL
+        string "OTA Manifest URL"
+        default ""
+        help
+            HTTPS URL to a JSON manifest file: {"version":"1.0.0","firmware_url":"https://..."}.
+            Leave blank to disable OTA.
+
+    config GROCY_OTA_CHECK_INTERVAL_SEC
+        int "OTA check interval (seconds)"
+        default 3600
+        range 60 86400
+
+    config GROCY_SCREEN_WAKE_CAMERA
+        bool "Enable camera-based presence detection for screen wake"
+        default n
+        help
+            When enabled, the onboard camera detects motion/presence and wakes the screen.
+            Costs ~20-30 mA extra. Default: use MQTT trigger from Home Assistant.
+
+    config GROCY_MQTT_BROKER_URL
+        string "MQTT Broker URL"
+        default "mqtt://homeassistant.local"
+        help
+            MQTT broker URL. Use mqtts:// for TLS (port 8883). Example: mqtt://192.168.1.10:1883
+
+    config GROCY_MQTT_PORT
+        int "MQTT Port (0 = use scheme default)"
+        default 0
+        range 0 65535
+
+    config GROCY_MQTT_USERNAME
+        string "MQTT Username"
+        default ""
+
+    config GROCY_MQTT_PASSWORD
+        string "MQTT Password"
+        default ""
+
+    config GROCY_DEVICE_ID
+        string "Device ID (overrides eFuse MAC)"
+        default ""
+        help
+            Override the device ID used in MQTT topics. If blank, the 12-char hex eFuse MAC is used.
+
+    config GROCY_MQTT_LOG_LEVEL
+        int "MQTT log level (0=none 1=error 2=warn 3=info 4=debug)"
+        default 2
+        range 0 4
+
+    config GROCY_WIFI_SSID
+        string "WiFi SSID (initial flash default)"
+        default ""
+        help
+            Default WiFi SSID. Overridden by NVS value set in setup screen.
+
+    config GROCY_WIFI_PASSWORD
+        string "WiFi Password (initial flash default)"
+        default ""
+
+    config GROCY_IMAGE_CACHE_SIZE
+        int "Image cache size (number of images)"
+        default 200
+        range 10 500
+
+endmenu

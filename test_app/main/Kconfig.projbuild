@@ -1,0 +1,72 @@
+menu "GROCY TERMINAL"
+
+    config GROCY_API_URL
+        string "Grocy API Base URL"
+        default "http://grocy.local"
+
+    config GROCY_API_KEY
+        string "Grocy API Key"
+        default ""
+
+    config GROCY_LOCATION_ID
+        int "Grocy Location ID"
+        default 1
+
+    config GROCY_REFRESH_INTERVAL_SEC
+        int "Product list refresh interval (seconds)"
+        default 300
+        range 10 3600
+
+    config GROCY_OTA_MANIFEST_URL
+        string "OTA Manifest URL"
+        default ""
+
+    config GROCY_OTA_CHECK_INTERVAL_SEC
+        int "OTA check interval (seconds)"
+        default 3600
+        range 60 86400
+
+    config GROCY_SCREEN_WAKE_CAMERA
+        bool "Enable camera-based presence detection"
+        default n
+
+    config GROCY_MQTT_BROKER_URL
+        string "MQTT Broker URL"
+        default "mqtt://homeassistant.local"
+
+    config GROCY_MQTT_PORT
+        int "MQTT Port"
+        default 0
+        range 0 65535
+
+    config GROCY_MQTT_USERNAME
+        string "MQTT Username"
+        default ""
+
+    config GROCY_MQTT_PASSWORD
+        string "MQTT Password"
+        default ""
+
+    config GROCY_DEVICE_ID
+        string "Device ID"
+        default ""
+
+    config GROCY_MQTT_LOG_LEVEL
+        int "MQTT log level"
+        default 2
+        range 0 4
+
+    config GROCY_WIFI_SSID
+        string "WiFi SSID"
+        default ""
+
+    config GROCY_WIFI_PASSWORD
+        string "WiFi Password"
+        default ""
+
+    config GROCY_IMAGE_CACHE_SIZE
+        int "Image cache size"
+        default 200
+        range 10 500
+
+endmenu

@@ -1,0 +1,24 @@
+idf_component_register(
+    WHOLE_ARCHIVE
+    SRCS
+        "test_runner.c"
+        "test_ota_semver.c"
+        "test_grocy_json.c"
+        "test_config.c"
+        # Source files under test
+        "../../main/ota/ota_manifest.c"
+        "../../main/common/config.c"
+        "../../main/grocy/grocy_client.c"
+    INCLUDE_DIRS
+        "."
+        "../../main"
+        "../../main/common"
+        "../../main/ota"
+        "../../main/grocy"
+    REQUIRES
+        unity
+        nvs_flash
+        json
+        esp_http_client
+        log
+)

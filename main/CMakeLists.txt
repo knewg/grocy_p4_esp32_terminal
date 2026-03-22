@@ -1,0 +1,65 @@
+set(MAIN_SRCS
+    "app_main.c"
+    "common/event_bus.c"
+    "common/config.c"
+    "board/board_init.c"
+    "board/esp_lcd_jd9165.c"
+    "grocy/grocy_client.c"
+    "grocy/grocy_image_cache.c"
+    "grocy/grocy_task.c"
+    "ui/ui_main.c"
+    "ui/ui_product_cell.c"
+    "ui/ui_setup.c"
+    "screen/screen_ctrl.c"
+    "wifi/wifi_manager.c"
+    "wifi/grocy_mqtt.c"
+    "wifi/mqtt_log.c"
+    "wifi/mqtt_events.c"
+    "ota/ota_task.c"
+    "ota/ota_manifest.c"
+)
+
+set(MAIN_INCLUDE_DIRS
+    "."
+    "common"
+    "board"
+    "grocy"
+    "ui"
+    "screen"
+    "wifi"
+    "ota"
+)
+
+if(CONFIG_GROCY_SCREEN_WAKE_CAMERA)
+    list(APPEND MAIN_SRCS "camera/cam_presence.c")
+    list(APPEND MAIN_INCLUDE_DIRS "camera")
+endif()
+
+idf_component_register(
+    SRCS
+        ${MAIN_SRCS}
+    INCLUDE_DIRS
+        ${MAIN_INCLUDE_DIRS}
+    REQUIRES
+        nvs_flash
+        esp_wifi
+        esp_hw_support
+        esp_http_client
+        esp_http_server
+        esp_https_ota
+        esp_event
+        esp_timer
+        esp_lcd
+        driver
+        freertos
+        log
+        json
+        app_update
+        esp_netif
+        lwip
+        mqtt
+        esp_driver_jpeg
+        lvgl__lvgl
+        espressif__esp_lvgl_port
+        espressif__esp_lcd_touch_gt911
+)
