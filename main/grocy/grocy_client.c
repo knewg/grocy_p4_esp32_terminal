@@ -13,9 +13,11 @@
 
 static const char *TAG = "grocy_client";
 
-/* ── Internal HTTP helpers ── */
+/* ── Persistent HTTP client ── */
 
-#define HTTP_RECV_BUF_SIZE  (64 * 1024)  /* 64 KB initial, grown as needed */
+#define HTTP_RECV_BUF_SIZE  (64 * 1024)
+
+static esp_http_client_handle_t s_client = NULL;
 
 typedef struct {
     uint8_t *buf;
@@ -24,10 +26,11 @@ typedef struct {
     bool     oom;
 } http_body_t;
 
+static http_body_t s_body;  /* reused across requests; reset before each call */
+
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
-    http_body_t *body = (http_body_t *)evt->user_data;
-    if (!body) return ESP_OK;
+    http_body_t *body = &s_body;
 
     switch (evt->event_id) {
     case HTTP_EVENT_ON_DATA:
@@ -46,6 +49,9 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
         memcpy(body->buf + body->len, evt->data, evt->data_len);
         body->len += evt->data_len;
         break;
+    case HTTP_EVENT_DISCONNECTED:
+        ESP_LOGD(TAG, "HTTP disconnected");
+        break;
     default:
         break;
     }
@@ -53,51 +59,36 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 }
 
 /**
- * Perform a GET request and return the response body.
- * Caller must free() the returned buffer.
+ * Perform a GET using the persistent client. Returns a PSRAM buffer that
+ * the caller must free(), or NULL on error.
  */
 static uint8_t *http_get(const char *url, const char *api_key, size_t *out_len)
 {
-    http_body_t body = {0};
-    body.cap = HTTP_RECV_BUF_SIZE;
-    body.buf = psram_malloc(body.cap);
-    if (!body.buf) {
-        ESP_LOGE(TAG, "Failed to allocate HTTP receive buffer");
+    if (!s_client) return NULL;
+
+    s_body.len = 0;
+    s_body.oom = false;
+
+    esp_http_client_set_url(s_client, url);
+    esp_http_client_set_method(s_client, HTTP_METHOD_GET);
+    esp_http_client_set_header(s_client, "GROCY-API-KEY", api_key);
+    esp_http_client_set_header(s_client, "Accept", "application/json");
+
+    esp_err_t err = esp_http_client_perform(s_client);
+    int status    = esp_http_client_get_status_code(s_client);
+
+    if (err != ESP_OK || status != 200 || s_body.oom) {
+        ESP_LOGE(TAG, "GET %s failed: err=%s status=%d", url, esp_err_to_name(err), status);
         return NULL;
     }
 
-    esp_http_client_config_t cfg = {
-        .url                = url,
-        .event_handler      = http_event_handler,
-        .user_data          = &body,
-        .buffer_size        = 4096,
-        .timeout_ms         = 10000,
-        .disable_auto_redirect = false,
-        .crt_bundle_attach  = esp_crt_bundle_attach,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) {
-        free(body.buf);
-        return NULL;
-    }
-
-    esp_http_client_set_header(client, "GROCY-API-KEY", api_key);
-    esp_http_client_set_header(client, "Accept", "application/json");
-
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
-
-    if (err != ESP_OK || status != 200 || body.oom) {
-        ESP_LOGE(TAG, "GET %s failed: err=%s status=%d oom=%d",
-                 url, esp_err_to_name(err), status, body.oom);
-        free(body.buf);
-        return NULL;
-    }
-
-    body.buf[body.len] = '\0';
-    *out_len = body.len;
-    return body.buf;
+    /* Copy result out of the shared buffer into a fresh allocation */
+    uint8_t *out = psram_malloc(s_body.len + 1);
+    if (!out) return NULL;
+    memcpy(out, s_body.buf, s_body.len);
+    out[s_body.len] = '\0';
+    *out_len = s_body.len;
+    return out;
 }
 
 /**
@@ -105,29 +96,43 @@ static uint8_t *http_get(const char *url, const char *api_key, size_t *out_len)
  */
 static int http_post_json(const char *url, const char *api_key, const char *json_body)
 {
-    esp_http_client_config_t cfg = {
-        .url                = url,
-        .method             = HTTP_METHOD_POST,
-        .timeout_ms         = 10000,
-        .crt_bundle_attach  = esp_crt_bundle_attach,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) return -1;
+    if (!s_client) return -1;
 
-    esp_http_client_set_header(client, "GROCY-API-KEY", api_key);
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    esp_http_client_set_post_field(client, json_body, strlen(json_body));
+    s_body.len = 0;
+    s_body.oom = false;
 
-    esp_err_t err = esp_http_client_perform(client);
-    int status = (err == ESP_OK) ? esp_http_client_get_status_code(client) : -1;
-    esp_http_client_cleanup(client);
-    return status;
+    esp_http_client_set_url(s_client, url);
+    esp_http_client_set_method(s_client, HTTP_METHOD_POST);
+    esp_http_client_set_header(s_client, "GROCY-API-KEY", api_key);
+    esp_http_client_set_header(s_client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(s_client, json_body, strlen(json_body));
+
+    esp_err_t err = esp_http_client_perform(s_client);
+    return (err == ESP_OK) ? esp_http_client_get_status_code(s_client) : -1;
 }
 
 /* ── Public API ── */
 
 esp_err_t grocy_client_init(void)
 {
+    s_body.cap = HTTP_RECV_BUF_SIZE;
+    s_body.buf = psram_malloc(s_body.cap);
+    if (!s_body.buf) return ESP_ERR_NO_MEM;
+
+    esp_http_client_config_t cfg = {
+        .url               = g_config.grocy_url,   /* base URL; overridden per-request */
+        .event_handler     = http_event_handler,
+        .buffer_size       = 4096,
+        .timeout_ms        = 10000,
+        .keep_alive_enable = true,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+    };
+    s_client = esp_http_client_init(&cfg);
+    if (!s_client) {
+        free(s_body.buf);
+        return ESP_FAIL;
+    }
+
     ESP_LOGI(TAG, "Grocy client initialised. URL: %s", g_config.grocy_url);
     return ESP_OK;
 }
@@ -229,19 +234,46 @@ esp_err_t grocy_fetch_location_products(grocy_product_list_msg_t *out_list)
         : NULL;
     free(entries_body);
 
-    /* ── Step 3: filter products whose default location_id matches ── */
+    /* ── Step 3: build set of product IDs that are parents (referenced as
+       parent_product_id by any other product) — these will be hidden ── */
+    int total_prods = cJSON_GetArraySize(all_products);
+
+    /* Collect parent IDs into a small stack-friendly array via PSRAM */
+    uint32_t *parent_ids = psram_calloc(total_prods > 0 ? total_prods : 1, sizeof(uint32_t));
+    int parent_count = 0;
+    if (parent_ids) {
+        cJSON *p2 = NULL;
+        cJSON_ArrayForEach(p2, all_products) {
+            cJSON *j_par = cJSON_GetObjectItem(p2, "parent_product_id");
+            if (j_par && !cJSON_IsNull(j_par)) {
+                uint32_t pid = (uint32_t)cJSON_GetNumberValue(j_par);
+                if (pid) parent_ids[parent_count++] = pid;
+            }
+        }
+    }
+
+    /* ── Step 4: filter products whose default location_id matches and are not parents ── */
     /* First pass: count matches */
     int match_count = 0;
     cJSON *prod = NULL;
     cJSON_ArrayForEach(prod, all_products) {
         cJSON *j_loc = cJSON_GetObjectItem(prod, "location_id");
-        if (j_loc && (uint32_t)cJSON_GetNumberValue(j_loc) == g_config.grocy_location_id)
-            match_count++;
+        if (!j_loc || (uint32_t)cJSON_GetNumberValue(j_loc) != g_config.grocy_location_id)
+            continue;
+        /* Check not a parent */
+        cJSON *j_id = cJSON_GetObjectItem(prod, "id");
+        uint32_t pid = j_id ? (uint32_t)cJSON_GetNumberValue(j_id) : 0;
+        bool is_parent = false;
+        for (int i = 0; i < parent_count; i++) {
+            if (parent_ids[i] == pid) { is_parent = true; break; }
+        }
+        if (!is_parent) match_count++;
     }
 
     if (match_count == 0) {
         cJSON_Delete(all_products);
         if (entries) cJSON_Delete(entries);
+        free(parent_ids);
         out_list->products = psram_calloc(1, sizeof(grocy_product_t));
         out_list->count = 0;
         ESP_LOGI(TAG, "No products assigned to location %lu",
@@ -269,7 +301,14 @@ esp_err_t grocy_fetch_location_products(grocy_product_list_msg_t *out_list)
         cJSON *j_pic  = cJSON_GetObjectItem(prod, "picture_file_name");
 
         if (!j_id) continue;
-        p->id = (uint32_t)cJSON_GetNumberValue(j_id);
+        uint32_t pid = (uint32_t)cJSON_GetNumberValue(j_id);
+        bool is_parent = false;
+        for (int i = 0; i < parent_count; i++) {
+            if (parent_ids[i] == pid) { is_parent = true; break; }
+        }
+        if (is_parent) continue;
+
+        p->id = pid;
         if (j_name && cJSON_IsString(j_name))
             strlcpy(p->name, j_name->valuestring, sizeof(p->name));
         if (j_pic && cJSON_IsString(j_pic))
@@ -292,6 +331,7 @@ esp_err_t grocy_fetch_location_products(grocy_product_list_msg_t *out_list)
 
     cJSON_Delete(all_products);
     if (entries) cJSON_Delete(entries);
+    free(parent_ids);
 
     qsort(products, valid, sizeof(grocy_product_t), product_compare);
 
@@ -324,7 +364,7 @@ esp_err_t grocy_post_stock_entry(const grocy_stock_cmd_t *cmd)
     return ESP_OK;
 }
 
-esp_err_t grocy_fetch_image(const char *filename, uint8_t *buf, size_t max_len, size_t *out_len)
+uint8_t *grocy_fetch_image(const char *filename, size_t *out_len)
 {
     /* Grocy API requires the filename to be base64-encoded in the URL */
     unsigned char b64[192];
@@ -337,37 +377,9 @@ esp_err_t grocy_fetch_image(const char *filename, uint8_t *buf, size_t max_len, 
     snprintf(url, sizeof(url), "%s/api/files/productpictures/%s",
              g_config.grocy_url, (char *)b64);
 
-    http_body_t body = {
-        .buf = buf,
-        .len = 0,
-        .cap = max_len - 1,
-        .oom = false,
-    };
-
-    esp_http_client_config_t cfg = {
-        .url               = url,
-        .event_handler     = http_event_handler,
-        .user_data         = &body,
-        .buffer_size       = 4096,
-        .timeout_ms        = 15000,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) return ESP_FAIL;
-
-    esp_http_client_set_header(client, "GROCY-API-KEY", g_config.grocy_api_key);
-
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
-
-    if (err != ESP_OK || status != 200) {
-        ESP_LOGW(TAG, "Image fetch failed: %s status=%d", filename, status);
-        return ESP_FAIL;
-    }
-
-    *out_len = body.len;
-    return ESP_OK;
+    uint8_t *data = http_get(url, g_config.grocy_api_key, out_len);
+    if (!data) ESP_LOGW(TAG, "Image fetch failed: %s", filename);
+    return data;
 }
 
 esp_err_t grocy_fetch_locations(grocy_location_t **out, uint16_t *out_count)

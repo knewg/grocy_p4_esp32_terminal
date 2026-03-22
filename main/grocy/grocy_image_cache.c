@@ -102,23 +102,17 @@ esp_err_t image_cache_fetch_and_store(uint32_t product_id, const char *filename)
         return ESP_OK;
     }
 
-    /* Allocate temp download buffer in PSRAM */
-    uint8_t *tmp = psram_malloc(IMG_TEMP_BUF_SIZE);
-    if (!tmp) {
-        ESP_LOGE(TAG, "OOM allocating image temp buffer");
-        return ESP_ERR_NO_MEM;
-    }
-
     size_t raw_len = 0;
-    esp_err_t ret = grocy_fetch_image(filename, tmp, IMG_TEMP_BUF_SIZE, &raw_len);
-    if (ret != ESP_OK || raw_len == 0) {
+    uint8_t *tmp = grocy_fetch_image(filename, &raw_len);
+    if (!tmp || raw_len == 0) {
         free(tmp);
-        return ret;
+        return ESP_FAIL;
     }
 
     /* Detect format: PNG = 0x89 0x50 0x4E 0x47; JPEG = 0xFF 0xD8 */
     bool is_png  = (raw_len >= 4) && (tmp[0] == 0x89 && tmp[1] == 'P' && tmp[2] == 'N' && tmp[3] == 'G');
     bool is_jpeg = (raw_len >= 2) && (tmp[0] == 0xFF && tmp[1] == 0xD8);
+    esp_err_t ret = ESP_OK;
 
     if (is_png) {
         /*

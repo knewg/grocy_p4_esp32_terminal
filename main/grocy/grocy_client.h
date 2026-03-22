@@ -70,11 +70,10 @@ esp_err_t grocy_fetch_location_products(grocy_product_list_msg_t *out_list);
 esp_err_t grocy_post_stock_entry(const grocy_stock_cmd_t *cmd);
 
 /**
- * Download a product image into a caller-provided PSRAM buffer.
- * Sets *out_len to the number of bytes written.
- * Caller allocates buf (at least max_len bytes).
+ * Download a product image. Returns a PSRAM-allocated buffer the caller must
+ * free(), or NULL on error. Sets *out_len to the byte count.
  */
-esp_err_t grocy_fetch_image(const char *filename, uint8_t *buf, size_t max_len, size_t *out_len);
+uint8_t *grocy_fetch_image(const char *filename, size_t *out_len);
 
 /**
  * Fetch available locations (for the setup screen).
