@@ -30,8 +30,16 @@
 static const char *TAG = "app_main";
 
 /* ── WiFi connected callback ── */
+static bool s_services_started = false;
+
 static void on_wifi_connected(void)
 {
+    if (s_services_started) {
+        /* Reconnection — services are already running. */
+        ESP_LOGI(TAG, "WiFi reconnected");
+        return;
+    }
+    s_services_started = true;
     ESP_LOGI(TAG, "WiFi connected — starting services");
 
     /* 7. SNTP for UTC timestamps */

@@ -25,6 +25,15 @@ CONFIG_LV_USE_PNG=y
 CONFIG_LV_USE_FS_MEMFS=y
 CONFIG_LV_FS_MEMFS_LETTER=77
 
+# LVGL rendering performance
+# PPA (Pixel Processing Accelerator) — hardware fills/blending on ESP32-P4
+CONFIG_LV_USE_PPA=y
+CONFIG_LV_USE_PPA_IMG=y
+# Cache-line alignment required for PPA DMA
+CONFIG_LV_DRAW_BUF_ALIGN=64
+# 60 fps render cadence (was 33 ms / ~30 fps)
+CONFIG_LV_DEF_REFR_PERIOD=16
+
 # FreeRTOS
 CONFIG_FREERTOS_HZ=1000
 CONFIG_FREERTOS_UNICORE=n

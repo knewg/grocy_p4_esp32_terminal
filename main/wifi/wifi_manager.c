@@ -9,20 +9,35 @@
 #include "esp_http_server.h"
 #include "esp_mac.h"
 #include "lwip/inet.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <string.h>
 #include <stdint.h>
+#include <inttypes.h>
 
 static const char *TAG = "wifi_mgr";
 
-#define STA_MAX_RETRIES  3
+#define STA_MAX_RETRIES        5    /* only applies before first successful connection */
+#define STA_BACKOFF_MS_INITIAL 1000
+#define STA_BACKOFF_MS_MAX     30000
 #define SOFTAP_SSID_PREFIX "GrocyTerminal-"
 
 static wifi_connected_cb_t    s_on_connected    = NULL;
 static wifi_disconnected_cb_t s_on_disconnected = NULL;
 static int                    s_retry_count      = 0;
 static bool                   s_connected        = false;
+static bool                   s_ever_connected   = false; /* latched on first IP_EVENT_STA_GOT_IP */
 static char                   s_ssid[64]         = {0};
 static httpd_handle_t         s_portal_server    = NULL;
+
+/* Reconnect task — runs the backoff delay outside the system event task */
+static void reconnect_task(void *arg)
+{
+    uint32_t delay_ms = (uint32_t)(uintptr_t)arg;
+    vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    esp_wifi_connect();
+    vTaskDelete(NULL);
+}
 
 /* ── Captive portal HTML ── */
 static const char *PORTAL_HTML =
@@ -146,12 +161,23 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         s_ssid[0]   = '\0';
         if (s_on_disconnected) s_on_disconnected();
 
-        /* Post wifi_disconnected event for telemetry */
-        esp_event_post_to(g_grocy_event_loop, GROCY_EVENT,
-                          GROCY_EVENT_REFRESH_NOW, NULL, 0, 0);
-
         s_retry_count++;
-        if (s_retry_count <= STA_MAX_RETRIES) {
+
+        if (s_ever_connected) {
+            /* Device has connected before — retry indefinitely with exponential backoff.
+             * Never fall back to SoftAP; credentials are known-good.
+             * Spawn a small task so we don't block the system event task. */
+            uint32_t backoff_ms = STA_BACKOFF_MS_INITIAL;
+            for (int i = 1; i < s_retry_count && backoff_ms < STA_BACKOFF_MS_MAX; i++) {
+                backoff_ms *= 2;
+            }
+            if (backoff_ms > STA_BACKOFF_MS_MAX) backoff_ms = STA_BACKOFF_MS_MAX;
+            ESP_LOGW(TAG, "WiFi disconnected (reason=%d), retry %d (backoff %"PRIu32" ms)",
+                     disconn->reason, s_retry_count, backoff_ms);
+            xTaskCreate(reconnect_task, "wifi_reconnect", 4096,
+                        (void *)(uintptr_t)backoff_ms, 5, NULL);
+        } else if (s_retry_count <= STA_MAX_RETRIES) {
+            /* Still on initial boot, haven't connected yet */
             ESP_LOGW(TAG, "WiFi disconnected (reason=%d), retry %d/%d",
                      disconn->reason, s_retry_count, STA_MAX_RETRIES);
             esp_wifi_connect();
@@ -166,8 +192,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *ev = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&ev->ip_info.ip));
-        s_retry_count = 0;
-        s_connected   = true;
+        s_retry_count    = 0;
+        s_connected      = true;
+        s_ever_connected = true;
         strlcpy(s_ssid, g_config.wifi_ssid, sizeof(s_ssid));
 
         if (s_on_connected) s_on_connected();

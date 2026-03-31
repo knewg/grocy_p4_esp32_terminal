@@ -180,7 +180,7 @@ static esp_err_t lvgl_port_register(void)
      * so we use avoid_tearing=false with a single FB for now. */
     const lvgl_port_display_cfg_t disp_cfg = {
         .panel_handle  = s_panel,
-        .buffer_size   = BOARD_DISPLAY_WIDTH * 100,
+        .buffer_size   = BOARD_DISPLAY_WIDTH * BOARD_DISPLAY_HEIGHT,
         .double_buffer = true,
         .hres          = BOARD_DISPLAY_WIDTH,
         .vres          = BOARD_DISPLAY_HEIGHT,
@@ -192,7 +192,7 @@ static esp_err_t lvgl_port_register(void)
             .mirror_y = false,
         },
         .flags = {
-            .buff_dma     = false,
+            .buff_dma     = true,   /* DMA-capable PSRAM on P4 (SOC_PSRAM_DMA_CAPABLE) */
             .buff_spiram  = true,
             .sw_rotate    = false,
             .direct_mode  = false,

@@ -1,4 +1,5 @@
 #include "ui_product_cell.h"
+#include "ui_main.h"
 #include "grocy_image_cache.h"
 #include "esp_log.h"
 #include <stdio.h>
@@ -76,7 +77,7 @@ lv_obj_t *ui_product_cell_create(lv_obj_t *parent, const grocy_product_t *produc
     lv_obj_set_width(lbl_name, UI_CELL_WIDTH - 8);
     lv_obj_set_style_text_align(lbl_name, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(lbl_name, lv_color_hex(0xE0E0F0), 0);
-    lv_obj_set_style_text_font(lbl_name, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_name, &g_font_main, 0);
     ud->lbl_name = lbl_name;
 
     /* ── Stock quantity ── */
@@ -86,7 +87,7 @@ lv_obj_t *ui_product_cell_create(lv_obj_t *parent, const grocy_product_t *produc
     lv_label_set_text(lbl_qty, qty_str);
     lv_obj_set_style_text_align(lbl_qty, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(lbl_qty, lv_color_hex(0x88BBFF), 0);
-    lv_obj_set_style_text_font(lbl_qty, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_qty, &g_font_main, 0);
     ud->lbl_qty = lbl_qty;
 
     ud->error_overlay = NULL;
@@ -150,7 +151,7 @@ void ui_product_cell_set_error(lv_obj_t *cell)
     lv_obj_t *lbl = lv_label_create(overlay);
     lv_label_set_text(lbl, LV_SYMBOL_WARNING "\nFailed");
     lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl, &g_font_main, 0);
     lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(lbl);
 

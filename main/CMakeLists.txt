@@ -10,6 +10,7 @@ set(MAIN_SRCS
     "ui/ui_main.c"
     "ui/ui_product_cell.c"
     "ui/ui_setup.c"
+    "ui/lv_font_montserrat_14_latin_ext.c"
     "screen/screen_ctrl.c"
     "wifi/wifi_manager.c"
     "wifi/grocy_mqtt.c"
@@ -59,6 +60,7 @@ idf_component_register(
         lwip
         mqtt
         esp_driver_jpeg
+        esp_mm
         lvgl__lvgl
         espressif__esp_lvgl_port
         espressif__esp_lcd_touch_gt911

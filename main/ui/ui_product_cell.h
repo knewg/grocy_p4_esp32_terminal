@@ -47,7 +47,7 @@ void ui_product_cell_flash(lv_obj_t *cell, bool is_add_mode);
  */
 void ui_product_cell_set_theme(lv_obj_t *cell, bool is_add_mode);
 
-#define UI_CELL_WIDTH   196
+#define UI_CELL_WIDTH   195
 #define UI_CELL_HEIGHT  260
 #define UI_CELL_IMG_W   150
 #define UI_CELL_IMG_H   150

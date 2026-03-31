@@ -1,5 +1,18 @@
 #include "ui_main.h"
 #include "ui_product_cell.h"
+
+/* Extended Latin font – provides fallback glyphs for å ä ö and other U+00C0–U+00FF */
+LV_FONT_DECLARE(lv_font_montserrat_14_latin_ext);
+
+/*
+ * Mutable font wrapper with fallback chain.
+ * lv_font_montserrat_14 is declared `const` (placed in .rodata/flash), so we
+ * cannot write its `fallback` field directly — that would corrupt read-only
+ * memory and cause unpredictable crashes.  Instead we copy the struct once at
+ * init time and set `fallback` on the mutable copy.  All UI code then uses
+ * &g_font_main instead of &g_font_main.
+ */
+lv_font_t g_font_main;   /* zeroed at startup; initialised in ui_main_init() */
 #include "grocy_task.h"
 #include "event_bus.h"
 #include "grocy_client.h"
@@ -43,6 +56,7 @@ static lv_timer_t *s_poll_timer = NULL;
 /* Error: product_id set from event handler, consumed by poll timer */
 static atomic_uint s_failed_product_id = 0;
 #define ERROR_SHOW_MS  4000
+static lv_timer_t *s_error_clear_timer = NULL;
 
 /* ── Segmented toggle helpers ── */
 #define TOGGLE_ACTIVE_CONSUME  lv_color_hex(0xE74C3C)
@@ -152,6 +166,7 @@ static int64_t s_error_show_until_us = 0;
 
 static void error_clear_timer_cb(lv_timer_t *t)
 {
+    s_error_clear_timer = NULL;
     lv_obj_t *cell = (lv_obj_t *)lv_timer_get_user_data(t);
     ui_product_cell_clear_error(cell);
 }
@@ -169,8 +184,11 @@ static void poll_timer_cb(lv_timer_t *t)
         for (uint16_t i = 0; i < s_product_count; i++) {
             if (s_products[i].id == failed_id) {
                 ui_product_cell_set_error(s_cells[i]);
-                lv_timer_t *clr = lv_timer_create(error_clear_timer_cb, 4000, s_cells[i]);
-                lv_timer_set_repeat_count(clr, 1);
+                if (s_error_clear_timer) {
+                    lv_timer_delete(s_error_clear_timer);
+                }
+                s_error_clear_timer = lv_timer_create(error_clear_timer_cb, 4000, s_cells[i]);
+                lv_timer_set_repeat_count(s_error_clear_timer, 1);
                 break;
             }
         }
@@ -230,7 +248,7 @@ static void build_header(lv_obj_t *screen)
     lv_obj_t *lbl_c = lv_label_create(s_consume_btn);
     lv_label_set_text(lbl_c, "Consume");
     lv_obj_set_style_text_color(lbl_c, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(lbl_c, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_c, &g_font_main, 0);
     lv_obj_center(lbl_c);
 
     s_purchase_btn = lv_button_create(seg);
@@ -241,7 +259,7 @@ static void build_header(lv_obj_t *screen)
     lv_obj_t *lbl_p = lv_label_create(s_purchase_btn);
     lv_label_set_text(lbl_p, "Purchase");
     lv_obj_set_style_text_color(lbl_p, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(lbl_p, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_p, &g_font_main, 0);
     lv_obj_center(lbl_p);
 
     update_toggle_ui();
@@ -256,7 +274,7 @@ static void build_header(lv_obj_t *screen)
     s_lbl_status = lv_label_create(header);
     lv_label_set_text(s_lbl_status, "Loading...");
     lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_lbl_status, &g_font_main, 0);
 
     /* Refresh button */
     lv_obj_t *refresh_btn = lv_button_create(header);
@@ -266,7 +284,7 @@ static void build_header(lv_obj_t *screen)
     lv_obj_add_event_cb(refresh_btn, refresh_btn_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *rlbl = lv_label_create(refresh_btn);
     lv_label_set_text(rlbl, LV_SYMBOL_REFRESH " Refresh");
-    lv_obj_set_style_text_font(rlbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(rlbl, &g_font_main, 0);
     lv_obj_center(rlbl);
 }
 
@@ -286,10 +304,15 @@ static void build_grid(lv_obj_t *screen)
     lv_obj_set_scroll_dir(s_grid, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_grid, LV_SCROLLBAR_MODE_ACTIVE);
     lv_obj_clear_flag(s_grid, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_set_scroll_snap_y(s_grid, LV_SCROLL_SNAP_START);
 }
 
 esp_err_t ui_main_init(void)
 {
+    /* Build the mutable font: copy const base font, then set fallback chain. */
+    g_font_main          = lv_font_montserrat_14;   /* struct copy; pointers still reference flash data */
+    g_font_main.fallback = &lv_font_montserrat_14_latin_ext;
+
     lv_obj_t *screen = lv_screen_active();
     lv_obj_set_style_bg_color(screen, lv_color_hex(0x12121E), 0);
 
@@ -322,6 +345,12 @@ void ui_main_update_products(const grocy_product_list_msg_t *msg)
 
     /* Hide grid while rebuilding to avoid a blank-screen flash */
     lv_obj_add_flag(s_grid, LV_OBJ_FLAG_HIDDEN);
+
+    /* Cancel any pending error-clear timer — its cell pointer is about to be freed */
+    if (s_error_clear_timer) {
+        lv_timer_delete(s_error_clear_timer);
+        s_error_clear_timer = NULL;
+    }
 
     /* Free old cell objects */
     lv_obj_clean(s_grid);

@@ -1,4 +1,5 @@
 #include "ui_setup.h"
+#include "ui_main.h"
 #include "config.h"
 #include "grocy_client.h"
 #include "esp_log.h"
@@ -111,7 +112,7 @@ esp_err_t ui_setup_show(void)
     /* ── Title ── */
     lv_obj_t *title = lv_label_create(screen);
     lv_label_set_text(title, "Grocy Terminal Setup");
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(title, &g_font_main, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 16);
 
@@ -187,7 +188,7 @@ esp_err_t ui_setup_show(void)
     lv_obj_add_event_cb(save_btn, save_btn_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *save_lbl = lv_label_create(save_btn);
     lv_label_set_text(save_lbl, "Save & Restart");
-    lv_obj_set_style_text_font(save_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(save_lbl, &g_font_main, 0);
     lv_obj_center(save_lbl);
 
     /* ── LVGL keyboard ── */

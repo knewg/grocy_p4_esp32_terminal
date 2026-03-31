@@ -3,6 +3,15 @@
 #include <stdbool.h>
 #include "esp_err.h"
 #include "grocy_client.h"
+#include "lvgl.h"
+
+/**
+ * Mutable copy of lv_font_montserrat_14 with the Latin-1 extension fallback
+ * chain attached.  All UI code must use &g_font_main instead of the const
+ * &lv_font_montserrat_14 symbol, so that writing the fallback pointer does not
+ * corrupt read-only flash memory.
+ */
+extern lv_font_t g_font_main;
 
 #ifdef __cplusplus
 extern "C" {

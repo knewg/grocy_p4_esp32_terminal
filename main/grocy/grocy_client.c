@@ -416,14 +416,22 @@ esp_err_t grocy_post_stock_entry(const grocy_stock_cmd_t *cmd)
 
 uint8_t *grocy_fetch_image(const char *filename, size_t *out_len)
 {
-    /* Grocy API requires the filename to be base64-encoded in the URL */
-    unsigned char b64[192];
+    /* Grocy API requires the filename to be base64-encoded in the URL.
+     * b64[256] handles filenames up to 190 chars; well above any real Grocy filename.
+     * url[] worst case: grocy_url(127) + path(27) + b64(255) + null = 410 bytes. */
+    unsigned char b64[256];
     size_t b64_len = 0;
-    mbedtls_base64_encode(b64, sizeof(b64), &b64_len,
-                          (const unsigned char *)filename, strlen(filename));
+    int b64_ret = mbedtls_base64_encode(b64, sizeof(b64), &b64_len,
+                                        (const unsigned char *)filename,
+                                        strlen(filename));
+    if (b64_ret != 0) {
+        ESP_LOGE(TAG, "base64 encode failed for filename '%s' (len=%d, ret=%d) — "
+                      "increase b64 buffer", filename, (int)strlen(filename), b64_ret);
+        return NULL;
+    }
     b64[b64_len] = '\0';
 
-    char url[384];
+    char url[420];
     snprintf(url, sizeof(url), "%s/api/files/productpictures/%s",
              g_config.grocy_url, (char *)b64);
 
