@@ -112,7 +112,12 @@ void app_main(void)
     screen_on();
 
     /* 6. LVGL port task (core 1) — must be before board_lvgl_register */
-    const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    /* sw_rotate uses an extra render buffer on the LVGL task stack; 32 KB prevents
+     * stack overflow that otherwise manifests as TLSF heap corruption in portrait mode. */
+    lvgl_cfg.task_stack    = 32768;
+    lvgl_cfg.task_affinity = 1;   /* pin to core 1 — grocy HTTP task owns core 0 */
+    lvgl_cfg.task_priority = 5;   /* match grocy_task priority; cores are separate so no contention */
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
 
     /* 6b. Register display + touch with LVGL port (requires lvgl_port_init) */

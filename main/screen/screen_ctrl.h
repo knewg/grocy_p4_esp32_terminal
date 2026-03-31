@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,6 +25,11 @@ esp_err_t screen_on(void);
  * Fade screen off (backlight to 0).
  */
 esp_err_t screen_off(void);
+
+/**
+ * Returns true if the screen is currently sleeping (backlight off).
+ */
+bool screen_is_sleeping(void);
 
 #ifdef __cplusplus
 }

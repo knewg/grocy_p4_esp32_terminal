@@ -186,10 +186,18 @@ esp_err_t grocy_client_init(void)
     return ESP_OK;
 }
 
+static const char *product_category(const grocy_product_t *p)
+{
+    return p->category[0] ? p->category : "Other";
+}
+
 static int product_compare(const void *a, const void *b)
 {
-    return strcasecmp(((const grocy_product_t *)a)->name,
-                      ((const grocy_product_t *)b)->name);
+    const grocy_product_t *pa = (const grocy_product_t *)a;
+    const grocy_product_t *pb = (const grocy_product_t *)b;
+    int r = strcasecmp(product_category(pa), product_category(pb));
+    if (r != 0) return r;
+    return strcasecmp(pa->name, pb->name);
 }
 
 esp_err_t grocy_parse_product_list_json(const uint8_t *json_body, size_t len,
@@ -273,6 +281,36 @@ esp_err_t grocy_fetch_location_products(grocy_product_list_msg_t *out_list)
     free(prods_body);
     if (!all_products) return ESP_FAIL;
 
+    /* ── Step 1b: product groups (id → name) for category labels ── */
+    typedef struct { uint32_t id; char name[64]; } product_group_t;
+    product_group_t *groups = NULL;
+    int group_count = 0;
+    {
+        snprintf(url, sizeof(url), "%s/api/objects/product_groups", g_config.grocy_url);
+        size_t grp_len = 0;
+        uint8_t *grp_body = http_get(url, g_config.grocy_api_key, &grp_len);
+        if (grp_body) {
+            cJSON *grp_root = cJSON_ParseWithLength((const char *)grp_body, grp_len);
+            free(grp_body);
+            if (grp_root) {
+                int cnt = cJSON_GetArraySize(grp_root);
+                groups = psram_calloc(cnt > 0 ? cnt : 1, sizeof(product_group_t));
+                if (groups) {
+                    cJSON *gi = NULL;
+                    cJSON_ArrayForEach(gi, grp_root) {
+                        cJSON *j_gid   = cJSON_GetObjectItem(gi, "id");
+                        cJSON *j_gname = cJSON_GetObjectItem(gi, "name");
+                        if (!j_gid || !j_gname) continue;
+                        groups[group_count].id = (uint32_t)cJSON_GetNumberValue(j_gid);
+                        strlcpy(groups[group_count].name, j_gname->valuestring, 64);
+                        group_count++;
+                    }
+                }
+                cJSON_Delete(grp_root);
+            }
+        }
+    }
+
     /* ── Step 2: current stock entries at this location (product_id → amount) ── */
     snprintf(url, sizeof(url), "%s/api/stock/locations/%lu/entries",
              g_config.grocy_url, (unsigned long)g_config.grocy_location_id);
@@ -323,6 +361,7 @@ esp_err_t grocy_fetch_location_products(grocy_product_list_msg_t *out_list)
         cJSON_Delete(all_products);
         if (entries) cJSON_Delete(entries);
         free(parent_ids);
+        if (groups) free(groups);
         out_list->products = psram_calloc(1, sizeof(grocy_product_t));
         out_list->count = 0;
         ESP_LOGI(TAG, "No products assigned to location %lu",
@@ -334,6 +373,7 @@ esp_err_t grocy_fetch_location_products(grocy_product_list_msg_t *out_list)
     if (!products) {
         cJSON_Delete(all_products);
         if (entries) cJSON_Delete(entries);
+        if (groups) free(groups);
         return ESP_ERR_NO_MEM;
     }
 
@@ -364,6 +404,19 @@ esp_err_t grocy_fetch_location_products(grocy_product_list_msg_t *out_list)
             strlcpy(p->picture_filename, j_pic->valuestring, sizeof(p->picture_filename));
         strlcpy(p->unit, "x", sizeof(p->unit));
 
+        /* Category lookup */
+        p->category[0] = '\0';
+        cJSON *j_grp = cJSON_GetObjectItem(prod, "product_group_id");
+        if (j_grp && !cJSON_IsNull(j_grp)) {
+            uint32_t gid = (uint32_t)cJSON_GetNumberValue(j_grp);
+            for (int g = 0; g < group_count; g++) {
+                if (groups[g].id == gid) {
+                    strlcpy(p->category, groups[g].name, sizeof(p->category));
+                    break;
+                }
+            }
+        }
+
         /* Find total stocked amount at this location (sum all batches) */
         p->stock_amount = 0.0f;
         if (entries) {
@@ -381,6 +434,7 @@ esp_err_t grocy_fetch_location_products(grocy_product_list_msg_t *out_list)
     cJSON_Delete(all_products);
     if (entries) cJSON_Delete(entries);
     free(parent_ids);
+    if (groups) free(groups);
 
     qsort(products, valid, sizeof(grocy_product_t), product_compare);
 

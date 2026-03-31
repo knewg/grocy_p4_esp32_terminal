@@ -325,6 +325,7 @@ static const lv_font_fmt_txt_dsc_t font_dsc = {
     .bpp           = 4,
     .kern_classes  = 0,
     .bitmap_format = 0,
+    .stride        = 1,  /* rows are byte-aligned (ceil(box_w/2) bytes each) */
 };
 
 const lv_font_t lv_font_montserrat_14_latin_ext = {

@@ -6,6 +6,8 @@
 
 static const char *TAG = "screen_ctrl";
 
+static bool s_screen_sleeping = false;
+
 static void screen_event_handler(void *arg, esp_event_base_t base,
                                   int32_t event_id, void *data)
 {
@@ -34,10 +36,17 @@ esp_err_t screen_ctrl_init(void)
 
 esp_err_t screen_on(void)
 {
+    s_screen_sleeping = false;
     return board_backlight_fade(BOARD_LEDC_MAX_DUTY, SCREEN_FADE_ON_MS);
 }
 
 esp_err_t screen_off(void)
 {
+    s_screen_sleeping = true;
     return board_backlight_fade(0, SCREEN_FADE_OFF_MS);
+}
+
+bool screen_is_sleeping(void)
+{
+    return s_screen_sleeping;
 }

@@ -13,6 +13,7 @@ extern "C" {
 typedef struct {
     uint32_t id;
     char     name[64];
+    char     category[64];
     float    stock_amount;
     char     unit[16];
     char     picture_filename[128];

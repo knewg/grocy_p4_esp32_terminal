@@ -67,7 +67,11 @@ static void events_handler(void *arg, esp_event_base_t base,
         }
     } else if (base == SCREEN_EVENT) {
         screen_event_data_t *ev = (screen_event_data_t *)data;
-        const char *src = (ev && ev->source == SCREEN_WAKE_SOURCE_MQTT) ? "mqtt" : "camera";
+        const char *src = "camera";
+        if (ev) {
+            if (ev->source == SCREEN_WAKE_SOURCE_MQTT)  src = "mqtt";
+            else if (ev->source == SCREEN_WAKE_SOURCE_TOUCH) src = "touch";
+        }
         snprintf(fields, sizeof(fields), "\"source\":\"%s\"", src);
         mqtt_event_publish(
             event_id == SCREEN_EVENT_WAKE ? "screen_wake" : "screen_sleep",

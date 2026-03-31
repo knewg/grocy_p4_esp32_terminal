@@ -11,10 +11,10 @@ extern "C" {
  * Create a product cell widget inside parent.
  * Returns the root lv_obj_t for the cell.
  *
- * Cell layout (196 × 260 px):
+ * Cell layout (189 × 160 px, portrait — 3 columns):
  *   ┌─────────────────┐
- *   │  [product img]  │  ~150×150
- *   │   Product Name  │  2-line ellipsis
+ *   │  [product img]  │  ~90×90
+ *   │   Product Name  │  ellipsis
  *   │   1.0  units    │  stock qty
  *   └─────────────────┘
  */
@@ -47,10 +47,15 @@ void ui_product_cell_flash(lv_obj_t *cell, bool is_add_mode);
  */
 void ui_product_cell_set_theme(lv_obj_t *cell, bool is_add_mode);
 
-#define UI_CELL_WIDTH   195
-#define UI_CELL_HEIGHT  260
-#define UI_CELL_IMG_W   150
-#define UI_CELL_IMG_H   150
+#define UI_CELL_WIDTH   189
+#define UI_CELL_HEIGHT  160
+#define UI_CELL_IMG_W   120
+#define UI_CELL_IMG_H   120
+
+/* Horizontal padding inside each cell — determines the actual image display area. */
+#define UI_CELL_PAD_HOR   8
+/* Maximum pixel width at which a product image is displayed (cell width minus padding). */
+#define UI_CELL_IMG_AREA_W  (UI_CELL_WIDTH - 2 * UI_CELL_PAD_HOR)  /* = 173 */
 
 #ifdef __cplusplus
 }

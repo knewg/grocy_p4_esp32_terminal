@@ -25,6 +25,7 @@ typedef enum {
 typedef enum {
     SCREEN_WAKE_SOURCE_MQTT   = 0,
     SCREEN_WAKE_SOURCE_CAMERA = 1,
+    SCREEN_WAKE_SOURCE_TOUCH  = 2,
 } screen_wake_source_t;
 
 typedef struct {

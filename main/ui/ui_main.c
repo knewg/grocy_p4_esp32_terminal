@@ -16,6 +16,7 @@ lv_font_t g_font_main;   /* zeroed at startup; initialised in ui_main_init() */
 #include "grocy_task.h"
 #include "event_bus.h"
 #include "grocy_client.h"
+#include "screen/screen_ctrl.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "esp_timer.h"
@@ -27,10 +28,10 @@ lv_font_t g_font_main;   /* zeroed at startup; initialised in ui_main_init() */
 static const char *TAG = "ui_main";
 
 /* ── Layout constants ── */
-#define DISPLAY_W      1024
-#define DISPLAY_H      600
+#define DISPLAY_W      600
+#define DISPLAY_H      1024
 #define HEADER_H       56
-#define GRID_COLS      5
+#define GRID_COLS      3
 #define GRID_PAD       8
 
 /* ── State ── */
@@ -53,10 +54,31 @@ static uint16_t   s_cell_count = 0;
 
 static lv_timer_t *s_poll_timer = NULL;
 
+/* Set when a touch wakes the screen; causes the first tap to be swallowed */
+static bool s_ignoring_next_tap = false;
+
 /* Error: product_id set from event handler, consumed by poll timer */
 static atomic_uint s_failed_product_id = 0;
 #define ERROR_SHOW_MS  4000
 static lv_timer_t *s_error_clear_timer = NULL;
+
+/* ── Touch-to-wake: fired by indev before LVGL dispatches to widgets ── */
+static void touch_wake_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!screen_is_sleeping()) return;
+
+    /* Wake the backlight immediately */
+    screen_on();
+    s_ignoring_next_tap = true;
+
+    /* Post SCREEN_EVENT_WAKE so mqtt_events publishes the state change */
+    screen_event_data_t ev = { .source = SCREEN_WAKE_SOURCE_TOUCH };
+    esp_event_post_to(g_grocy_event_loop, SCREEN_EVENT, SCREEN_EVENT_WAKE,
+                      &ev, sizeof(ev), 0);
+
+    ESP_LOGI(TAG, "Screen woken by touch");
+}
 
 /* ── Segmented toggle helpers ── */
 #define TOGGLE_ACTIVE_CONSUME  lv_color_hex(0xE74C3C)
@@ -96,6 +118,7 @@ static void inactivity_timer_cb(lv_timer_t *t)
 
 static void toggle_event_cb(lv_event_t *e)
 {
+    if (s_ignoring_next_tap) { s_ignoring_next_tap = false; return; }
     lv_obj_t *btn = lv_event_get_target(e);
     s_add_mode = (btn == s_purchase_btn);
     update_toggle_ui();
@@ -109,6 +132,7 @@ static void toggle_event_cb(lv_event_t *e)
 /* ── Product tap ── */
 static void cell_tap_cb(lv_event_t *e)
 {
+    if (s_ignoring_next_tap) { s_ignoring_next_tap = false; return; }
     lv_obj_t *cell = lv_event_get_target(e);
     void *ud = lv_obj_get_user_data(cell);
     if (!ud) return;
@@ -207,6 +231,7 @@ static void poll_timer_cb(lv_timer_t *t)
 /* ── Refresh button ── */
 static void refresh_btn_cb(lv_event_t *e)
 {
+    if (s_ignoring_next_tap) { s_ignoring_next_tap = false; return; }
     grocy_task_request_refresh();
     lv_label_set_text(s_lbl_status, "Refreshing...");
 }
@@ -299,12 +324,11 @@ static void build_grid(lv_obj_t *screen)
     lv_obj_set_style_pad_all(s_grid, GRID_PAD, 0);
     lv_obj_set_style_pad_gap(s_grid, GRID_PAD, 0);
 
-    /* Flex: row-wrap → cells fill columns left-to-right, then new row */
-    lv_obj_set_flex_flow(s_grid, LV_FLEX_FLOW_ROW_WRAP);
+    /* Column flex: category headers + row-wrap sub-containers stack vertically */
+    lv_obj_set_flex_flow(s_grid, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scroll_dir(s_grid, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_grid, LV_SCROLLBAR_MODE_ACTIVE);
     lv_obj_clear_flag(s_grid, LV_OBJ_FLAG_SCROLL_ELASTIC);
-    lv_obj_set_scroll_snap_y(s_grid, LV_SCROLL_SNAP_START);
 }
 
 esp_err_t ui_main_init(void)
@@ -325,6 +349,15 @@ esp_err_t ui_main_init(void)
     /* Inactivity timer: revert to Consume after 10 minutes */
     s_inactivity_timer = lv_timer_create(inactivity_timer_cb, 10 * 60 * 1000, NULL);
     lv_timer_set_repeat_count(s_inactivity_timer, 1);
+
+    /* Touch-to-wake: register on the pointer indev so any touch wakes a sleeping screen */
+    lv_indev_t *indev = lv_indev_get_next(NULL);
+    while (indev && lv_indev_get_type(indev) != LV_INDEV_TYPE_POINTER) {
+        indev = lv_indev_get_next(indev);
+    }
+    if (indev) {
+        lv_indev_add_event_cb(indev, touch_wake_cb, LV_EVENT_PRESSED, NULL);
+    }
 
     esp_event_handler_register_with(g_grocy_event_loop, GROCY_EVENT,
                                      GROCY_EVENT_STOCK_POST_FAILED,
@@ -375,10 +408,38 @@ void ui_main_update_products(const grocy_product_list_msg_t *msg)
         return;
     }
 
+    /* Build grouped layout: category header + row-wrap sub-container per group */
+    lv_obj_t *cat_container = NULL;
+    const char *cur_category = NULL;
+
     for (uint16_t i = 0; i < s_product_count; i++) {
-        lv_obj_t *cell = ui_product_cell_create(s_grid, &s_products[i]);
+        const char *cat = s_products[i].category[0] ? s_products[i].category : "Other";
+
+        if (!cur_category || strcasecmp(cur_category, cat) != 0) {
+            cur_category = cat;
+
+            /* Category header label */
+            lv_obj_t *hdr = lv_label_create(s_grid);
+            lv_obj_set_width(hdr, lv_pct(100));
+            lv_obj_set_style_text_color(hdr, lv_color_hex(0x888888), 0);
+            lv_obj_set_style_text_font(hdr, &g_font_main, 0);
+            lv_obj_set_style_pad_top(hdr, 6, 0);
+            lv_obj_set_style_pad_bottom(hdr, 2, 0);
+            lv_label_set_text(hdr, cat);
+
+            /* Row-wrap sub-container for this category's cells */
+            cat_container = lv_obj_create(s_grid);
+            lv_obj_set_width(cat_container, lv_pct(100));
+            lv_obj_set_height(cat_container, LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(cat_container, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(cat_container, 0, 0);
+            lv_obj_set_style_pad_all(cat_container, 0, 0);
+            lv_obj_set_style_pad_gap(cat_container, GRID_PAD, 0);
+            lv_obj_set_flex_flow(cat_container, LV_FLEX_FLOW_ROW_WRAP);
+        }
+
+        lv_obj_t *cell = ui_product_cell_create(cat_container, &s_products[i]);
         if (!cell) continue;
-        /* Override the cell_event_cb with our tap handler */
         lv_obj_add_event_cb(cell, cell_tap_cb, LV_EVENT_CLICKED, NULL);
         s_cells[i] = cell;
     }

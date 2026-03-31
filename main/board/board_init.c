@@ -194,7 +194,7 @@ static esp_err_t lvgl_port_register(void)
         .flags = {
             .buff_dma     = true,   /* DMA-capable PSRAM on P4 (SOC_PSRAM_DMA_CAPABLE) */
             .buff_spiram  = true,
-            .sw_rotate    = false,
+            .sw_rotate    = true,
             .direct_mode  = false,
             .full_refresh = false,
         },
@@ -206,6 +206,11 @@ static esp_err_t lvgl_port_register(void)
     if (!s_display) {
         ESP_LOGE(TAG, "lvgl_port_add_disp_dsi failed");
         return ESP_FAIL;
+    }
+    /* Rotate 90° — must hold LVGL lock to avoid invalidating while LVGL task renders */
+    if (lvgl_port_lock(portMAX_DELAY)) {
+        lv_display_set_rotation(s_display, LV_DISPLAY_ROTATION_90);
+        lvgl_port_unlock();
     }
 
     if (s_touch) {
