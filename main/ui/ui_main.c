@@ -17,6 +17,8 @@ lv_font_t g_font_main;   /* zeroed at startup; initialised in ui_main_init() */
 #include "event_bus.h"
 #include "grocy_client.h"
 #include "screen/screen_ctrl.h"
+#include "wifi_manager.h"
+#include "grocy_mqtt.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 #include "esp_timer.h"
@@ -185,6 +187,21 @@ static void on_stock_post_failed(void *arg, esp_event_base_t base,
     }
 }
 
+/* ── Status label: empty unless WiFi/MQTT is down ── */
+static void update_normal_status(void)
+{
+    const char *ssid = wifi_manager_get_ssid();
+    if (!ssid || ssid[0] == '\0') {
+        lv_label_set_text(s_lbl_status, LV_SYMBOL_WARNING " WiFi disconnected");
+        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0xFF8800), 0);
+    } else if (!mqtt_is_connected()) {
+        lv_label_set_text(s_lbl_status, LV_SYMBOL_WARNING " MQTT disconnected");
+        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0xFF8800), 0);
+    } else {
+        lv_label_set_text(s_lbl_status, "");
+    }
+}
+
 /* ── Poll timer: drain the product queue and manage error banner ── */
 static int64_t s_error_show_until_us = 0;
 
@@ -219,12 +236,13 @@ static void poll_timer_cb(lv_timer_t *t)
         s_error_show_until_us = esp_timer_get_time() + ERROR_SHOW_MS * 1000LL;
         lv_label_set_text(s_lbl_status, LV_SYMBOL_WARNING " Update failed");
         lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0xFF4444), 0);
-    } else if (s_error_show_until_us && esp_timer_get_time() > s_error_show_until_us) {
-        s_error_show_until_us = 0;
-        char status[32];
-        snprintf(status, sizeof(status), "%d products", s_product_count);
-        lv_label_set_text(s_lbl_status, status);
-        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0x888888), 0);
+    } else if (s_error_show_until_us) {
+        if (esp_timer_get_time() > s_error_show_until_us) {
+            s_error_show_until_us = 0;
+            update_normal_status();
+        }
+    } else {
+        update_normal_status();
     }
 }
 
@@ -454,10 +472,7 @@ void ui_main_update_products(const grocy_product_list_msg_t *msg)
     /* Update status — but don't overwrite an active error banner */
     if (!s_error_show_until_us || esp_timer_get_time() > s_error_show_until_us) {
         s_error_show_until_us = 0;
-        char status[32];
-        snprintf(status, sizeof(status), "%d products", s_product_count);
-        lv_label_set_text(s_lbl_status, status);
-        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0x888888), 0);
+        update_normal_status();
     }
 
     ESP_LOGI(TAG, "Grid updated with %d products", s_product_count);

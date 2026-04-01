@@ -60,7 +60,6 @@ idf_component_register(
         lwip
         mqtt
         esp_driver_jpeg
-        esp_driver_ppa
         esp_mm
         lvgl__lvgl
         espressif__esp_lvgl_port

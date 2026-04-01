@@ -11,9 +11,6 @@
 #include "driver/jpeg_decode.h"
 #include "esp_cache.h"
 #endif
-#if CONFIG_SOC_PPA_SUPPORTED
-#include "driver/ppa.h"
-#endif
 
 static const char *TAG = "img_cache";
 
@@ -27,9 +24,6 @@ typedef struct {
 static cache_entry_t    *s_entries    = NULL;
 static uint16_t          s_max        = 0;
 static uint16_t          s_count      = 0;
-#if CONFIG_SOC_PPA_SUPPORTED
-static ppa_client_handle_t s_ppa_srm  = NULL;
-#endif
 
 /* Image download temp buffer — 512 KB should fit any product image */
 #define IMG_TEMP_BUF_SIZE  (512 * 1024)
@@ -43,16 +37,6 @@ esp_err_t image_cache_init(uint16_t max_entries)
     }
     s_max   = max_entries;
     s_count = 0;
-
-#if CONFIG_SOC_PPA_SUPPORTED
-    ppa_client_config_t ppa_cfg = { .oper_type = PPA_OPERATION_SRM };
-    esp_err_t ret = ppa_register_client(&ppa_cfg, &s_ppa_srm);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "PPA SRM unavailable (%s) — images will not be pre-scaled", esp_err_to_name(ret));
-        s_ppa_srm = NULL;
-    }
-#endif
-
     ESP_LOGI(TAG, "Image cache initialised (max %d entries)", max_entries);
     return ESP_OK;
 }
@@ -240,15 +224,17 @@ esp_err_t image_cache_fetch_and_store(uint32_t product_id, const char *filename)
          * no dirty lines survive to overwrite the decoded data. */
         esp_cache_msync(rgb_data, alloc_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
-        /* Pre-scale to display size so per-frame PPA blits are fast 1:1 copies.
-         * Target: fit within UI_CELL_IMG_W × UI_CELL_IMG_H preserving aspect ratio. */
-#if CONFIG_SOC_PPA_SUPPORTED
-        if (s_ppa_srm &&
-            (pic_info.width > UI_CELL_IMG_AREA_W || pic_info.height > UI_CELL_IMG_H)) {
-
+        /* Pre-scale to display size so per-frame blits are fast 1:1 copies.
+         * Target: fit within UI_CELL_IMG_AREA_W × UI_CELL_IMG_H preserving aspect ratio.
+         *
+         * NOTE: PPA SRM cannot be used here — its scale register has only 4 fractional
+         * bits (1/16 steps), so large downscales (e.g. 700→120 ≈ 0.171) are quantised
+         * to 0.125, writing an undersized image and leaving the rest as noise.
+         * CPU nearest-neighbour is fast enough (~15k pixel reads for 120×120 output). */
+        if (pic_info.width > UI_CELL_IMG_AREA_W || pic_info.height > UI_CELL_IMG_H) {
             uint32_t src_w = pic_info.width, src_h = pic_info.height;
             uint32_t tgt_w, tgt_h;
-            if (src_w * UI_CELL_IMG_H >= src_h * UI_CELL_IMG_AREA_W) {
+            if (src_w * UI_CELL_IMG_H >= src_h * (uint32_t)UI_CELL_IMG_AREA_W) {
                 tgt_w = UI_CELL_IMG_AREA_W;
                 tgt_h = src_h * UI_CELL_IMG_AREA_W / src_w;
             } else {
@@ -258,58 +244,35 @@ esp_err_t image_cache_fetch_and_store(uint32_t product_id, const char *filename)
             if (tgt_w == 0) tgt_w = 1;
             if (tgt_h == 0) tgt_h = 1;
 
-            /* PPA RGB565 output row width must be a multiple of 4 pixels to avoid
-             * row-offset corruption when the hardware addresses rows by stride. */
-            uint32_t tgt_stride_w = (tgt_w + 3u) & ~3u;
-
-            /* PPA output buffer must be aligned to the L2 cache line (64 B) */
-            size_t tgt_data_size = (tgt_stride_w * tgt_h * 2 + 63u) & ~63u;
-            uint8_t *scaled = heap_caps_aligned_alloc(64, tgt_data_size,
-                                                       MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM);
+            uint8_t *scaled = psram_malloc(tgt_w * tgt_h * 2);
             if (scaled) {
-                /* Flush to ensure PPA DMA sees clean memory before it writes */
-                esp_cache_msync(scaled, tgt_data_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-
-                ppa_srm_oper_config_t srm = {
-                    .in.buffer          = rgb_data,
-                    .in.pic_w           = out_w,   /* padded stride from JPEG HW decoder */
-                    .in.pic_h           = out_h,
-                    .in.block_w         = src_w,
-                    .in.block_h         = src_h,
-                    .in.block_offset_x  = 0,
-                    .in.block_offset_y  = 0,
-                    .in.srm_cm          = PPA_SRM_COLOR_MODE_RGB565,
-                    .out.buffer         = scaled,
-                    .out.buffer_size    = tgt_data_size,
-                    .out.pic_w          = tgt_stride_w,  /* stride must be mult-of-4 */
-                    .out.pic_h          = tgt_h,
-                    .out.block_offset_x = 0,
-                    .out.block_offset_y = 0,
-                    .out.srm_cm         = PPA_SRM_COLOR_MODE_RGB565,
-                    .rotation_angle     = PPA_SRM_ROTATION_ANGLE_0,
-                    .scale_x            = (float)tgt_w / src_w,
-                    .scale_y            = (float)tgt_h / src_h,
-                    .mode               = PPA_TRANS_MODE_BLOCKING,
-                };
-                if (ppa_do_scale_rotate_mirror(s_ppa_srm, &srm) == ESP_OK) {
-                    esp_cache_msync(scaled, tgt_data_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-                    free(rgb_data);
-                    rgb_data        = scaled;
-                    actual_out      = tgt_stride_w * tgt_h * 2;
-                    out_w           = tgt_stride_w;  /* padded stride for dsc.header.stride */
-                    out_h           = tgt_h;
-                    pic_info.width  = tgt_w;         /* actual (unpadded) pixel width */
-                    pic_info.height = tgt_h;
-                    ESP_LOGI(TAG, "Pre-scaled %"PRIu32"x%"PRIu32" → %"PRIu32"x%"PRIu32
-                             " (stride %"PRIu32")",
-                             src_w, src_h, tgt_w, tgt_h, tgt_stride_w);
-                } else {
-                    ESP_LOGW(TAG, "PPA scale failed — storing at full resolution");
-                    free(scaled);
+                /* Nearest-neighbour downscale using fixed-point step sizes.
+                 * Source rows are stride out_w pixels (JPEG decoder padding). */
+                uint32_t x_step = (src_w << 16) / tgt_w;
+                uint32_t y_step = (src_h << 16) / tgt_h;
+                const uint16_t *src = (const uint16_t *)rgb_data;
+                uint16_t *dst = (uint16_t *)scaled;
+                uint32_t y_fp = 0;
+                for (uint32_t y = 0; y < tgt_h; y++, y_fp += y_step) {
+                    const uint16_t *src_row = src + (y_fp >> 16) * out_w;
+                    uint32_t x_fp = 0;
+                    for (uint32_t x = 0; x < tgt_w; x++, x_fp += x_step) {
+                        dst[y * tgt_w + x] = src_row[x_fp >> 16];
+                    }
                 }
+                free(rgb_data);
+                rgb_data        = scaled;
+                actual_out      = tgt_w * tgt_h * 2;
+                out_w           = tgt_w;
+                out_h           = tgt_h;
+                pic_info.width  = tgt_w;
+                pic_info.height = tgt_h;
+                ESP_LOGI(TAG, "Pre-scaled %"PRIu32"x%"PRIu32" → %"PRIu32"x%"PRIu32,
+                         src_w, src_h, tgt_w, tgt_h);
+            } else {
+                ESP_LOGW(TAG, "OOM for scaled buffer — storing at full resolution");
             }
         }
-#endif /* CONFIG_SOC_PPA_SUPPORTED */
 
         /* Store (possibly pre-scaled) image */
         {
