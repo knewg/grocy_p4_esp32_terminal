@@ -15,6 +15,7 @@ typedef struct {
     lv_obj_t  *lbl_name;
     lv_obj_t  *lbl_qty;
     lv_obj_t  *error_overlay;
+    lv_obj_t  *disabled_overlay;
 } cell_data_t;
 
 static void cell_event_cb(lv_event_t *e)
@@ -111,7 +112,8 @@ lv_obj_t *ui_product_cell_create(lv_obj_t *parent, const grocy_product_t *produc
     lv_obj_set_style_text_font(lbl_qty, &g_font_main, 0);
     ud->lbl_qty = lbl_qty;
 
-    ud->error_overlay = NULL;
+    ud->error_overlay    = NULL;
+    ud->disabled_overlay = NULL;
 
     lv_obj_set_user_data(cell, ud);
     lv_obj_add_event_cb(cell, cell_event_cb, LV_EVENT_CLICKED, NULL);
@@ -186,6 +188,29 @@ void ui_product_cell_clear_error(lv_obj_t *cell)
 
     lv_obj_delete(ud->error_overlay);
     ud->error_overlay = NULL;
+}
+
+void ui_product_cell_set_disabled(lv_obj_t *cell, bool disabled)
+{
+    cell_data_t *ud = (cell_data_t *)lv_obj_get_user_data(cell);
+    if (!ud) return;
+
+    if (disabled && !ud->disabled_overlay) {
+        lv_obj_t *overlay = lv_obj_create(cell);
+        lv_obj_add_flag(overlay, LV_OBJ_FLAG_FLOATING | LV_OBJ_FLAG_IGNORE_LAYOUT);
+        lv_obj_clear_flag(overlay, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_pos(overlay, -4, -4);
+        lv_obj_set_size(overlay, UI_CELL_WIDTH, UI_CELL_HEIGHT);
+        lv_obj_set_style_radius(overlay, 8, 0);
+        lv_obj_set_style_bg_color(overlay, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_bg_opa(overlay, LV_OPA_50, 0);
+        lv_obj_set_style_border_width(overlay, 0, 0);
+        lv_obj_set_style_pad_all(overlay, 0, 0);
+        ud->disabled_overlay = overlay;
+    } else if (!disabled && ud->disabled_overlay) {
+        lv_obj_delete(ud->disabled_overlay);
+        ud->disabled_overlay = NULL;
+    }
 }
 
 void ui_product_cell_update(lv_obj_t *cell, const grocy_product_t *product)

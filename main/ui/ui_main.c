@@ -104,7 +104,11 @@ static void update_toggle_ui(void)
             lv_color_hex(s_add_mode ? 0x0E170E : 0x12121E), 0);
     }
     for (uint16_t i = 0; i < s_cell_count; i++) {
-        if (s_cells[i]) ui_product_cell_set_theme(s_cells[i], s_add_mode);
+        if (s_cells[i]) {
+            ui_product_cell_set_theme(s_cells[i], s_add_mode);
+            bool zero_stock = (i < s_product_count) && (s_products[i].stock_amount <= 0.0f);
+            ui_product_cell_set_disabled(s_cells[i], !s_add_mode && zero_stock);
+        }
     }
 }
 
@@ -149,6 +153,15 @@ static void cell_tap_cb(lv_event_t *e)
         }
     }
 
+    /* In consume mode, silently ignore taps on zero-stock products */
+    if (!s_add_mode) {
+        for (uint16_t i = 0; i < s_product_count; i++) {
+            if (s_products[i].id == product_id && s_products[i].stock_amount <= 0.0f) {
+                return;
+            }
+        }
+    }
+
     grocy_stock_cmd_t cmd = {
         .product_id = product_id,
         .op         = s_add_mode ? GROCY_OP_ADD : GROCY_OP_CONSUME,
@@ -167,6 +180,8 @@ static void cell_tap_cb(lv_event_t *e)
                 s_products[i].stock_amount += s_add_mode ? 1.0f : -1.0f;
                 ui_product_cell_update(s_cells[i], &s_products[i]);
                 ui_product_cell_flash(s_cells[i], s_add_mode);
+                ui_product_cell_set_disabled(s_cells[i],
+                    !s_add_mode && s_products[i].stock_amount <= 0.0f);
                 break;
             }
         }

@@ -47,6 +47,12 @@ void ui_product_cell_flash(lv_obj_t *cell, bool is_add_mode);
  */
 void ui_product_cell_set_theme(lv_obj_t *cell, bool is_add_mode);
 
+/**
+ * Show or hide a dim overlay indicating the cell is non-actionable
+ * (e.g. zero stock in consume mode). Idempotent.
+ */
+void ui_product_cell_set_disabled(lv_obj_t *cell, bool disabled);
+
 #define UI_CELL_WIDTH   189
 #define UI_CELL_HEIGHT  160
 #define UI_CELL_IMG_W   120
