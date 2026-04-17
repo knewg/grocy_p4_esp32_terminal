@@ -24,6 +24,14 @@ static void cell_event_cb(lv_event_t *e)
     (void)e;
 }
 
+/* Free the lv_malloc'd user-data struct when the cell object is destroyed */
+static void cell_delete_cb(lv_event_t *e)
+{
+    lv_obj_t *cell = lv_event_get_target(e);
+    cell_data_t *ud = (cell_data_t *)lv_obj_get_user_data(cell);
+    lv_free(ud);
+}
+
 lv_obj_t *ui_product_cell_create(lv_obj_t *parent, const grocy_product_t *product)
 {
     lv_obj_t *cell = lv_obj_create(parent);
@@ -117,16 +125,31 @@ lv_obj_t *ui_product_cell_create(lv_obj_t *parent, const grocy_product_t *produc
 
     lv_obj_set_user_data(cell, ud);
     lv_obj_add_event_cb(cell, cell_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(cell, cell_delete_cb, LV_EVENT_DELETE, NULL);
     lv_obj_add_flag(cell, LV_OBJ_FLAG_CLICKABLE);
 
     return cell;
 }
 
 /* ── Flash animation ── */
+
+/* Called when the overlay is deleted before the timer fires (e.g. grid rebuild).
+ * Cancels the timer so it doesn't fire with a dangling pointer. */
+static void flash_overlay_delete_cb(lv_event_t *e)
+{
+    lv_timer_t *t = (lv_timer_t *)lv_event_get_user_data(e);
+    lv_timer_delete(t);
+}
+
 static void flash_timer_cb(lv_timer_t *t)
 {
     lv_obj_t *overlay = (lv_obj_t *)lv_timer_get_user_data(t);
-    if (overlay) lv_obj_delete(overlay);
+    if (overlay) {
+        /* Remove the delete guard before destroying overlay so the callback
+         * does not try to double-delete the timer that is already expiring. */
+        lv_obj_remove_event_cb(overlay, flash_overlay_delete_cb);
+        lv_obj_delete(overlay);
+    }
 }
 
 void ui_product_cell_flash(lv_obj_t *cell, bool is_add_mode)
@@ -146,6 +169,8 @@ void ui_product_cell_flash(lv_obj_t *cell, bool is_add_mode)
 
     lv_timer_t *t = lv_timer_create(flash_timer_cb, 200, overlay);
     lv_timer_set_repeat_count(t, 1);
+    /* Guard against the overlay being deleted before the timer fires */
+    lv_obj_add_event_cb(overlay, flash_overlay_delete_cb, LV_EVENT_DELETE, t);
 }
 
 void ui_product_cell_set_theme(lv_obj_t *cell, bool is_add_mode)

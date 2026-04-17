@@ -4,7 +4,9 @@
 #include "sdkconfig.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
+#ifndef LINUX_TARGET
 #include "esp_crt_bundle.h"
+#endif
 #include "esp_timer.h"
 #include "mbedtls/base64.h"
 #include "cJSON.h"
@@ -174,7 +176,9 @@ esp_err_t grocy_client_init(void)
         .buffer_size       = 4096,
         .timeout_ms        = 10000,
         .keep_alive_enable = true,
+#ifndef LINUX_TARGET
         .crt_bundle_attach = esp_crt_bundle_attach,
+#endif
     };
     s_client = esp_http_client_init(&cfg);
     if (!s_client) {

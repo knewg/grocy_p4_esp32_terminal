@@ -20,5 +20,7 @@ idf_component_register(
         nvs_flash
         json
         esp_http_client
+        esp_timer
+        mbedtls
         log
 )
